@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.16)
+project(SoapyFlex6000 LANGUAGES CXX)
+
+find_package(SoapySDR CONFIG REQUIRED)
+include(GNUInstallDirs)
+add_library(SoapyFlex6000 MODULE src/Flex6000.cpp)
+target_compile_features(SoapyFlex6000 PRIVATE cxx_std_17)
+target_compile_options(SoapyFlex6000 PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(SoapyFlex6000 PRIVATE SoapySDR)
+set_target_properties(SoapyFlex6000 PROPERTIES PREFIX "")
+install(TARGETS SoapyFlex6000 DESTINATION "${CMAKE_INSTALL_LIBDIR}/SoapySDR/modules${SOAPY_SDR_ABI_VERSION}")
