@@ -1,10 +1,14 @@
 # SoapyFlex6000
 
-A small SoapySDR module for FLEX-6000 radios. It passes DAX IQ receive samples to the application. This experimental branch also offers opt-in, narrowband transmit through DAX audio.
+A lightweight C++17 [SoapySDR](https://github.com/pothosware/SoapySDR) driver for FLEX-6000 series radios. It bridges the radio's DAX IQ receive stream into a SoapySDR application. Signal processing stays in the application.
+
+The `main` branch provides RX only. The `experimental/dax-audio-tx` branch adds opt-in narrowband TX through DAX audio. TX is still experimental; see [Transmit status](#transmit-status) before using it.
+
+The driver has been compiled against SoapySDR 0.8.1 and probed with a FLEX-6700. Continuous receive streaming has not yet been verified on the radio.
 
 ## Build
 
-Requires a C++17 compiler, CMake, and SoapySDR development headers.
+Requires a C++17 compiler, CMake 3.16 or newer, and SoapySDR development headers and library. Install those through your Linux distribution before building.
 
 ```sh
 cmake -S . -B build
@@ -12,18 +16,18 @@ cmake --build build
 sudo cmake --install build
 ```
 
-For an uninstalled build, set `SOAPY_SDR_PLUGIN_PATH` to the build directory. Run this from the project directory, even if you normally work elsewhere:
+To use an uninstalled build, run these commands from the project directory. `SOAPY_SDR_PLUGIN_PATH` applies only to the current shell and processes started from it:
 
 ```sh
 export SOAPY_SDR_PLUGIN_PATH="$PWD/build"
-SoapySDRUtil --info | grep flex6000
-SoapySDRUtil --find="driver=flex6000,addr=RADIO_IP"
+SoapySDRUtil --info
+SoapySDRUtil --find="driver=flex6000"
 SoapySDRUtil --probe="driver=flex6000,addr=RADIO_IP"
 ```
 
-Replace `RADIO_IP` with your radio's IPv4 address. If you used another build directory, put its absolute path in `SOAPY_SDR_PLUGIN_PATH`. `--find` with an explicit address only checks that SoapySDR loaded the module; `--probe` actually connects to the radio.
+Replace `RADIO_IP` with your radio's IPv4 address. If you used another build directory, put its absolute path in `SOAPY_SDR_PLUGIN_PATH`. `--find` checks discovery and module loading; `--probe` connects to the radio and reports its capabilities. If UDP discovery does not work, include `addr=RADIO_IP` in `--find` as well.
 
-A desktop application does not inherit environment variables exported in a separate terminal. To use the module without setting `SOAPY_SDR_PLUGIN_PATH`, install it with `sudo cmake --install build`, then restart the application.
+A desktop application does not inherit environment variables exported in a separate terminal. Install the module with `sudo cmake --install build` and restart the application if you want it available through the system SoapySDR plugin path.
 
 ## Use
 
@@ -47,9 +51,7 @@ Device arguments:
 
 The module exposes one RX channel in `CF32` format. Frequency, sample rate, and the radio's panadapter RF gain can be changed through SoapySDR. The initial RX antenna is selected with a device argument; runtime antenna switching has the limitation described below. The RF gain range is read from the connected radio. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply.
 
-This has been compiled against SoapySDR 0.8.1 and probed successfully with a FLEX-6700. Receive sample streaming remains unverified. The stable `main` branch remains RX only.
-
-## Experimental DAX audio transmit
+## Transmit status
 
 Set `tx_path=dax_audio` in the Soapy device arguments to expose one `CF32` TX channel. It accepts 24,000, 48,000, 96,000, or 192,000 samples/s and has 2,400 Hz of usable RF bandwidth. The driver reduces higher input rates to the radio's fixed 24,000 samples/s DAX audio rate, shifts complex baseband to a 1,500 Hz audio center, selects a DIGU slice 1,500 Hz below the Soapy TX center frequency, and sends 16-bit mono DAX audio. The Soapy application must keep its transmitted signal within ±1,200 Hz of its center frequency; the simple rate reduction is not a substitute for application bandlimiting. The radio's transmit filter must pass roughly 300–2,700 Hz for the full advertised width.
 
@@ -59,7 +61,7 @@ A three-second 1,700 Hz audio test using a FLEX-6700 completed with a TX indicat
 
 On the tested FLEX-6700, changing the RX antenna after the panadapter is created currently returns radio error `5000002D`, although `ant list` includes ANT2. Set the initial receive antenna with the `antenna=` device argument until runtime RX antenna switching is resolved. This does not affect the TX antenna setting.
 
-See the [Flex-to-Soapy capability checklist](SOAPY_CAPABILITY_CHECKLIST.md) for controls, meters, current support, and proposed mappings.
+See the [Flex-to-Soapy capability checklist](SOAPY_CAPABILITY_CHECKLIST.md) for controls, meters, current support, and proposed mappings. Checklist entries are planned work unless checked.
 
 The experimental IQ waveform setup disrupted the radio's control service without PTT. See [transmit investigation notes](TX_NOTES.md) before using that branch.
 

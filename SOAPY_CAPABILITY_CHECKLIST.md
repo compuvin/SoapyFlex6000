@@ -6,19 +6,17 @@ The radio's meter catalog is **dynamic**. `meter list` supplies each meter's ID,
 
 ## Standard Soapy controls
 
-| Done | Capability | Soapy API | Flex command or resource | Current behavior / remaining work |
-| --- | --- | --- | --- | --- |
-| [x] | RX center frequency | `setFrequency(RX)` | `display pan set … center=` | Implemented for the DAX IQ panadapter. |
-| [x] | TX center frequency | `setFrequency(TX)` | `slice t …` | DIGU slice tunes 1,500 Hz below Soapy's requested RF center. |
-| [x] | RX sample rate | `setSampleRate(RX)` | `dax iq set … rate=` and stream rate | 24, 48, 96, 192 kS/s. |
-| [x] | TX input sample rate | `setSampleRate(TX)` | DAX TX is 24 kS/s; driver reduces higher input rates | 24, 48, 96, 192 kS/s accepted. |
-| [x] | RX RF gain | `setGain(RX, "RF", dB)` | panadapter `rfgain=`; range from `rfgain_info` | Radio chooses the corresponding preamp/attenuator state. |
-| [x] | Initial RX antenna | device `antenna=` argument | `display pan c … ant=` | ANT2 device creation succeeded on the FLEX-6700. |
-| [ ] | Runtime RX antenna | `setAntenna(RX)` | panadapter `ant=` | The FLEX-6700 rejected both `display pan set` and `display pan s` with `5000002D`; investigate a slice-based route before claiming this works. |
-| [x] | TX antenna | `setAntenna(TX)` | `slice set … txant=` | ANT1/ANT2 are advertised on the experimental TX channel. |
-| [x] | TX usable bandwidth | `getBandwidth(TX)`, `listBandwidths(TX)` | driver/DAX audio limit | Reports a fixed 2.4 kHz. `setBandwidth(TX, 0 or 2400)` accepts the fixed choice; it does not alter the radio's global TX filter. |
-| [x] | TX start/stop | `activateStream(TX)`, `deactivateStream(TX)` | `xmit 1/0`, DAX source and stream | The driver restores the prior DAX source on normal stop. |
-| [ ] | Radio-reported frequency limits | `getFrequencyRange` | radio/band capability | The probe currently prints an empty frequency range. Discover a truthful model-specific range before advertising one. |
+- [x] **RX center frequency** — `setFrequency(RX)` maps to `display pan set … center=`. Implemented for the DAX IQ panadapter.
+- [x] **TX center frequency** — `setFrequency(TX)` maps to `slice t …`. The DIGU slice tunes 1,500 Hz below Soapy's requested RF center.
+- [x] **RX sample rate** — `setSampleRate(RX)` maps to `dax iq set … rate=` and stream rate. Supports 24, 48, 96, and 192 kS/s.
+- [x] **TX input sample rate** — `setSampleRate(TX)` accepts 24, 48, 96, and 192 kS/s. The driver reduces higher input rates to the 24 kS/s DAX TX rate.
+- [x] **RX RF gain** — `setGain(RX, "RF", dB)` maps to panadapter `rfgain=`; the range comes from `rfgain_info`. The radio chooses the corresponding preamp/attenuator state.
+- [x] **Initial RX antenna** — Device `antenna=` argument maps to `display pan c … ant=`. ANT2 device creation succeeded on the FLEX-6700.
+- [ ] **Runtime RX antenna** — `setAntenna(RX)` would map to panadapter `ant=`. The FLEX-6700 rejected both `display pan set` and `display pan s` with `5000002D`; investigate a slice-based route before claiming this works.
+- [x] **TX antenna** — `setAntenna(TX)` maps to `slice set … txant=`. ANT1/ANT2 are advertised on the experimental TX channel.
+- [x] **TX usable bandwidth** — `getBandwidth(TX)` and `listBandwidths(TX)` report a fixed 2.4 kHz DAX audio limit. `setBandwidth(TX, 0 or 2400)` accepts the fixed choice; it does not alter the radio's global TX filter.
+- [x] **TX start/stop** — `activateStream(TX)` and `deactivateStream(TX)` use `xmit 1/0`, DAX source, and stream. The driver restores the prior DAX source on normal stop.
+- [ ] **Radio-reported frequency limits** — `getFrequencyRange` currently prints an empty range. Discover a truthful model-specific range before advertising one.
 
 Sources: [Soapy device API](https://github.com/pothosware/SoapySDR/blob/master/include/SoapySDR/Device.hpp), [Flex panadapter](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-display-pan), [Flex DAX](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-dax), [Flex slice](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-slice).
 
@@ -26,15 +24,13 @@ Sources: [Soapy device API](https://github.com/pothosware/SoapySDR/blob/master/i
 
 These would be named entries in `getSettingInfo` and accessed through `writeSetting` / `readSetting`, rather than pretending that a radio percentage or filter edge is a Soapy gain in dB. None is exposed yet. Radio-wide settings should report their current value and should not be silently reset when the Soapy device closes.
 
-| Done | Proposed setting | Flex control | Notes |
-| --- | --- | --- | --- |
-| [ ] | `tx_rf_power` | `transmit set rfpower=` | Radio power/drive setting, 0–100; **not** Soapy `setGain(TX)` in dB. Read back before changing. |
-| [ ] | `tx_filter_low`, `tx_filter_high` | `transmit set filter_low=`, `filter_high=` | Global TX audio filter edges; read and preserve prior values. The fixed Soapy TX bandwidth is only a capability claim. |
-| [ ] | `tx_tune_power`, `tx_tune` | `transmit set tunepower=`, `transmit tune on/off` | Station tune operation, separate from normal sample transmission. |
-| [ ] | `atu_start`, `atu_bypass` | `atu start`, `atu bypass` | Available only when the radio has an ATU and is ready. Readback should be a sensor/setting if supported. |
-| [ ] | `interlock_timeout` | `interlock timeout=` | A radio-wide safety setting; expose only with accurate readback and ownership semantics. |
-| [ ] | `tx_filter` / `tx_source` readback | `sub tx all` status | The driver already reads DAX source internally for restoration; public readback needs clear scope. |
-| [ ] | `dax_channel` runtime change | `dax iq set … pan= … rate=` | Currently a device argument. Runtime reassignment would require a stream transition. |
+- [ ] **`tx_rf_power`** — `transmit set rfpower=` controls radio power/drive from 0–100. This is not Soapy `setGain(TX)` in dB. Read back before changing.
+- [ ] **`tx_filter_low`, `tx_filter_high`** — `transmit set filter_low=`, `filter_high=` control global TX audio filter edges. Read and preserve prior values. The fixed Soapy TX bandwidth is only a capability claim.
+- [ ] **`tx_tune_power`, `tx_tune`** — `transmit set tunepower=` and `transmit tune on/off` control station tuning separately from normal sample transmission.
+- [ ] **`atu_start`, `atu_bypass`** — `atu start` and `atu bypass` are available only when the radio has an ATU and is ready. Readback should be a sensor/setting if supported.
+- [ ] **`interlock_timeout`** — `interlock timeout=` is a radio-wide safety setting; expose only with accurate readback and ownership semantics.
+- [ ] **`tx_filter` / `tx_source` readback** — `sub tx all` status. The driver already reads DAX source internally for restoration; public readback needs clear scope.
+- [ ] **`dax_channel` runtime change** — `dax iq set … pan= … rate=`. Currently a device argument. Runtime reassignment would require a stream transition.
 
 Sources: [Flex transmit](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-transmit), [Flex ATU](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-atu), [Flex interlock](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-interlock), [Soapy settings API](https://github.com/pothosware/SoapySDR/blob/master/include/SoapySDR/Device.hpp).
 
@@ -42,17 +38,15 @@ Sources: [Flex transmit](https://github.com/flexradio/smartsdr-api-docs/wiki/TCP
 
 All unchecked: the driver currently exposes **no** Soapy sensors. The proposed implementation is `listSensors` / `getSensorInfo` / `readSensor`. Use Flex meter IDs plus source/ordinal in internal keys so meters with the same display name do not collide. Preserve the radio's units instead of relabeling a value without conversion. Do not report an old sample as current after its meter disappears.
 
-| Done | Meter or status group | Documented names / fields | Proposed Soapy scope |
-| --- | --- | --- | --- |
-| [ ] | RF output | `FWDPWR`, `REFPWR`, `SWR` | TX channel sensors when TX exists; otherwise device sensors. Forward/reflected power are documented in dBm. |
-| [ ] | PA health | `PATEMP` | Device sensor, °C. |
-| [ ] | Supply | `+13.8A`, `+13.8B` | Device sensors, volts before/after the fuse. |
-| [ ] | Transmit audio and processing | `MICPEAK`, `MIC`, `CODEC`, `SC_MIC`, `COMPPEAK`, `SC_FILT_1`, `ALC`, `SC_FILT_2`, `B4RAMP`, `AFRAMP`, `GAIN`, `HWALC` | TX channel or device sensors, usually dBFS; availability depends on mode and source. |
-| [ ] | Slice receive levels | `24kHz`, `OSC`, `LEVEL`, `NR/ANF`, `AGC+` | RX channel sensors only if associated with this driver's slice; this DAX IQ RX path does not currently own an RX slice. Other slices may still appear as device sensors. |
-| [ ] | Other advertised Flex meters | Every valid entry from `meter list` | Device sensors, discovered at runtime rather than hard-coded. |
-| [ ] | Transmit readiness | Interlock state/reason from status | Device or TX channel string/boolean sensors; status readback, not a VITA meter. |
-| [ ] | Reference/clock lock | `pll_done`, oscillator lock status when supplied | Device boolean sensors; availability varies by model and installed reference hardware. |
-| [ ] | Radio uptime | `radio uptime` | Device sensor in seconds; diagnostic readback, not a VITA meter. |
+- [ ] **RF output** — `FWDPWR`, `REFPWR`, `SWR`. TX channel sensors when TX exists; otherwise device sensors. Forward/reflected power are documented in dBm.
+- [ ] **PA health** — `PATEMP`. Device sensor, °C.
+- [ ] **Supply** — `+13.8A`, `+13.8B`. Device sensors, volts before/after the fuse.
+- [ ] **Transmit audio and processing** — `MICPEAK`, `MIC`, `CODEC`, `SC_MIC`, `COMPPEAK`, `SC_FILT_1`, `ALC`, `SC_FILT_2`, `B4RAMP`, `AFRAMP`, `GAIN`, `HWALC`. TX channel or device sensors, usually dBFS; availability depends on mode and source.
+- [ ] **Slice receive levels** — `24kHz`, `OSC`, `LEVEL`, `NR/ANF`, `AGC+`. RX channel sensors only if associated with this driver's slice; this DAX IQ RX path does not currently own an RX slice. Other slices may still appear as device sensors.
+- [ ] **Other advertised Flex meters** — Every valid entry from `meter list`. Device sensors, discovered at runtime rather than hard-coded.
+- [ ] **Transmit readiness** — Interlock state/reason from status. Device or TX channel string/boolean sensors; status readback, not a VITA meter.
+- [ ] **Reference/clock lock** — `pll_done`, oscillator lock status when supplied. Device boolean sensors; availability varies by model and installed reference hardware.
+- [ ] **Radio uptime** — `radio uptime`. Device sensor in seconds; diagnostic readback, not a VITA meter.
 
 Meter implementation checklist:
 
