@@ -45,7 +45,7 @@ Device arguments:
 | `antenna` | `ANT1` | Initial receive antenna |
 | `tx_path` | unset | Set to `dax_audio` to expose the experimental TX channel |
 
-The module exposes one RX channel in `CF32` format. Frequency, sample rate, antenna, and the radio's panadapter RF gain can be changed through SoapySDR. The RF gain range is read from the connected radio. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply.
+The module exposes one RX channel in `CF32` format. Frequency, sample rate, and the radio's panadapter RF gain can be changed through SoapySDR. The initial RX antenna is selected with a device argument; runtime antenna switching has the limitation described below. The RF gain range is read from the connected radio. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply.
 
 This has been compiled against SoapySDR 0.8.1 and probed successfully with a FLEX-6700. Receive sample streaming remains unverified. The stable `main` branch remains RX only.
 
@@ -58,6 +58,8 @@ TX starts when the application activates its TX stream and stops when it deactiv
 A three-second 1,700 Hz audio test using a FLEX-6700 completed with a TX indication and no apparent radio restart. RF output was not independently measured. This feature remains experimental; test into a suitable load before using an antenna.
 
 On the tested FLEX-6700, changing the RX antenna after the panadapter is created currently returns radio error `5000002D`, although `ant list` includes ANT2. Set the initial receive antenna with the `antenna=` device argument until runtime RX antenna switching is resolved. This does not affect the TX antenna setting.
+
+See the [Flex-to-Soapy capability checklist](SOAPY_CAPABILITY_CHECKLIST.md) for controls, meters, current support, and proposed mappings.
 
 The experimental IQ waveform setup disrupted the radio's control service without PTT. See [transmit investigation notes](TX_NOTES.md) before using that branch.
 
