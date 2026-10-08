@@ -11,6 +11,8 @@ The radio used for these checks reported SmartSDR 3.10.15.38923. This is diagnos
 
 Successful command replies therefore do not establish that this waveform setup is safe on the tested radio. The check did not isolate whether registration, slice creation, slice removal, waveform removal, or their timing caused the reboot. Further live waveform tests are stopped pending a better explanation. A dummy load addresses RF output, but it does not protect against a radio control-plane crash.
 
+The one-off check did not run a waveform event loop or answer waveform commands and VITA packets. AetherSDR's waveform documentation describes a receive loop running before registration and responses to radio-originated commands. Those missing pieces and the rapid teardown are possible contributors, not confirmed causes. The experimental prototype must handle that lifecycle before another live check.
+
 ## Separate transmit paths
 
 The working transmit path in [AetherSDR](https://github.com/aethersdr/AetherSDR) uses a `dax_tx` audio stream and Flex PTT control. DAX TX carries transmit audio, so it cannot be presented as a generic SoapySDR complex IQ TX stream without additional modulation and bandwidth limits.
