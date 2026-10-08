@@ -128,20 +128,20 @@ public:
     std::string getNativeStreamFormat(const int, const size_t, double &fullScale) const override
     { fullScale = 1.0; return SOAPY_SDR_CF32; }
     std::vector<double> listSampleRates(const int direction, const size_t) const override
-    { return direction == SOAPY_SDR_TX ? std::vector<double>{24000} : std::vector<double>{24000, 48000, 96000, 192000}; }
+    { (void)direction; return {24000, 48000, 96000, 192000}; }
     void setSampleRate(const int direction, const size_t, const double rate) override
-    { if (direction == SOAPY_SDR_TX) { if (!txEnabled_ || rate != 24000) throw std::runtime_error("TX requires 24000 samples/s"); return; } checkRx(direction); int r = int(std::lround(rate)); if (std::find(rates_.begin(), rates_.end(), r) == rates_.end()) throw std::runtime_error("Unsupported DAX IQ rate"); rate_ = r; configureRate(); }
-    double getSampleRate(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? 24000 : rate_; }
+    { if (direction == SOAPY_SDR_TX) { if (!txEnabled_ || txActive_ || !std::isfinite(rate) || std::find(rates_.begin(), rates_.end(), rate) == rates_.end()) throw std::runtime_error("Unsupported TX sample rate"); txRate_ = int(rate); return; } checkRx(direction); int r = int(std::lround(rate)); if (std::find(rates_.begin(), rates_.end(), r) == rates_.end()) throw std::runtime_error("Unsupported DAX IQ rate"); rate_ = r; configureRate(); }
+    double getSampleRate(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? txRate_ : rate_; }
     void setFrequency(const int direction, const size_t, const double frequency, const SoapySDR::Kwargs &) override
     { if (frequency <= 0) throw std::runtime_error("Invalid frequency"); if (direction == SOAPY_SDR_TX) { if (!txEnabled_ || txActive_) throw std::runtime_error("Cannot retune active TX"); txFrequency_ = frequency; if (txSlice_ >= 0) tuneTx(); return; } checkRx(direction); std::ostringstream s; s << std::fixed << std::setprecision(6) << frequency / 1e6; command("display pan set " + hexId(pan_) + " center=" + s.str()); frequency_ = frequency; }
     double getFrequency(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? txFrequency_ : frequency_; }
     std::vector<std::string> listAntennas(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? std::vector<std::string>{"ANT1", "ANT2"} : std::vector<std::string>{"ANT1", "ANT2", "RX_A", "RX_B"}; }
     void setAntenna(const int direction, const size_t, const std::string &antenna) override
-    { if (direction == SOAPY_SDR_TX) { if (!txEnabled_ || (antenna != "ANT1" && antenna != "ANT2") || txActive_) throw std::runtime_error("Invalid TX antenna or active TX"); txAntenna_ = antenna; if (txSlice_ >= 0) command("slice set " + std::to_string(txSlice_) + " txant=" + txAntenna_); return; } checkRx(direction); command("display pan set " + hexId(pan_) + " ant=" + antenna); antenna_ = antenna; }
+    { if (direction == SOAPY_SDR_TX) { if (!txEnabled_ || (antenna != "ANT1" && antenna != "ANT2") || txActive_) throw std::runtime_error("Invalid TX antenna or active TX"); txAntenna_ = antenna; if (txSlice_ >= 0) command("slice set " + std::to_string(txSlice_) + " txant=" + txAntenna_); return; } checkRx(direction); command("display pan s " + hexId(pan_) + " ant=" + antenna); antenna_ = antenna; }
     std::string getAntenna(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? txAntenna_ : antenna_; }
     std::vector<double> listBandwidths(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? std::vector<double>{2400} : std::vector<double>{}; }
     double getBandwidth(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? 2400 : 0; }
-    void setBandwidth(const int direction, const size_t, const double bandwidth) override { if (direction != SOAPY_SDR_TX || !txEnabled_ || bandwidth != 2400) throw std::runtime_error("TX bandwidth is fixed at 2400 Hz"); }
+    void setBandwidth(const int direction, const size_t, const double bandwidth) override { if (direction != SOAPY_SDR_TX || !txEnabled_ || (bandwidth != 0 && bandwidth != 2400)) throw std::runtime_error("TX bandwidth is fixed at 2400 Hz"); }
     std::vector<std::string> listGains(const int direction, const size_t) const override
     { return direction == SOAPY_SDR_RX && rfGainMax_ > rfGainMin_ ? std::vector<std::string>{"RF"} : std::vector<std::string>{}; }
     void setGain(const int direction, const size_t, const double value) override
@@ -178,10 +178,12 @@ public:
             std::chrono::steady_clock::now() + std::chrono::microseconds(timeoutUs);
         try {
             while (consumed < numElems) {
-                if (txFill_ == txSamples_.size()-1 && nextPacket_ > deadline)
+                if (converter_.nextInputProducesOutput() && txFill_ == txSamples_.size()-1 && nextPacket_ > deadline)
                     return consumed ? int(consumed) : SOAPY_SDR_TIMEOUT;
-                txSamples_[txFill_++] = converter_.convert(iq[2*consumed], iq[2*consumed+1]);
+                auto audio = converter_.feed(iq[2*consumed], iq[2*consumed+1]);
                 ++consumed;
+                if (!audio) continue;
+                txSamples_[txFill_++] = *audio;
                 if (txFill_ != txSamples_.size()) continue;
                 auto now = std::chrono::steady_clock::now();
                 if (now < nextPacket_) std::this_thread::sleep_until(nextPacket_);
@@ -260,7 +262,7 @@ private:
             command("slice set " + std::to_string(txSlice_) + " tx=1");
             command("transmit set dax=1");
             command("xmit 1"); txActive_ = true;
-            converter_.reset(); txFill_ = 0; txCount_ = 0;
+            converter_.setInputRate(txRate_); txFill_ = 0; txCount_ = 0;
             nextPacket_ = std::chrono::steady_clock::now();
         } catch (...) { try { command("xmit 0"); } catch (...) {} try { if (previousDax_) command("transmit set dax=" + std::to_string(*previousDax_)); } catch (...) {} throw; }
     }
@@ -323,7 +325,7 @@ private:
             received_.append(buffer, size_t(n));
         }
     }
-    int tcp_ = -1, udp_ = -1, channel_ = 1, rate_ = 48000;
+    int tcp_ = -1, udp_ = -1, channel_ = 1, rate_ = 48000, txRate_ = 24000;
     int rxTag_ = 0, txTag_ = 0, txSlice_ = -1;
     bool txEnabled_ = false, txActive_ = false;
     std::optional<int> txDaxStatus_, previousDax_;

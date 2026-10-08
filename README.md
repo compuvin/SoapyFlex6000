@@ -51,11 +51,13 @@ This has been compiled against SoapySDR 0.8.1 and probed successfully with a FLE
 
 ## Experimental DAX audio transmit
 
-Set `tx_path=dax_audio` in the Soapy device arguments to expose one `CF32` TX channel. Its sample rate is fixed at 24,000 samples/s and its usable RF bandwidth is 2,400 Hz. The driver shifts complex baseband to a 1,500 Hz audio center, selects a DIGU slice 1,500 Hz below the Soapy TX center frequency, and sends 16-bit mono DAX audio. The Soapy application must keep its transmitted signal within ±1,200 Hz of its center frequency; the driver does not filter or resample it. The radio's transmit filter must pass roughly 300–2,700 Hz for the full advertised width.
+Set `tx_path=dax_audio` in the Soapy device arguments to expose one `CF32` TX channel. It accepts 24,000, 48,000, 96,000, or 192,000 samples/s and has 2,400 Hz of usable RF bandwidth. The driver reduces higher input rates to the radio's fixed 24,000 samples/s DAX audio rate, shifts complex baseband to a 1,500 Hz audio center, selects a DIGU slice 1,500 Hz below the Soapy TX center frequency, and sends 16-bit mono DAX audio. The Soapy application must keep its transmitted signal within ±1,200 Hz of its center frequency; the simple rate reduction is not a substitute for application bandlimiting. The radio's transmit filter must pass roughly 300–2,700 Hz for the full advertised width.
 
 TX starts when the application activates its TX stream and stops when it deactivates or closes that stream. The driver attempts to restore the radio's prior DAX audio source afterward. Use `ANT1` or `ANT2` as the TX antenna. This path supports narrowband signals, not wideband IQ transmission.
 
 A three-second 1,700 Hz audio test using a FLEX-6700 completed with a TX indication and no apparent radio restart. RF output was not independently measured. This feature remains experimental; test into a suitable load before using an antenna.
+
+On the tested FLEX-6700, changing the RX antenna after the panadapter is created currently returns radio error `5000002D`, although `ant list` includes ANT2. Set the initial receive antenna with the `antenna=` device argument until runtime RX antenna switching is resolved. This does not affect the TX antenna setting.
 
 The experimental IQ waveform setup disrupted the radio's control service without PTT. See [transmit investigation notes](TX_NOTES.md) before using that branch.
 

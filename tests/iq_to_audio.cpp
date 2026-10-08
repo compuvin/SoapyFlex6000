@@ -15,14 +15,18 @@ double toneMagnitude(const std::array<std::int16_t, 24000> &audio, int hz)
     }
     return std::hypot(re, im) / audio.size();
 }
-bool checkTone(int basebandHz, int expectedAudioHz)
+bool checkTone(int inputRate, int basebandHz, int expectedAudioHz)
 {
     IqToDaxAudio converter;
+    converter.setInputRate(inputRate);
     std::array<std::int16_t, 24000> audio{};
-    for (size_t n = 0; n < audio.size(); ++n) {
-        double phase = 2 * pi * basebandHz * double(n) / IqToDaxAudio::sampleRate;
-        audio[n] = converter.convert(float(std::cos(phase) * 0.5), float(std::sin(phase) * 0.5));
+    size_t output = 0;
+    for (int n = 0; n < inputRate; ++n) {
+        double phase = 2 * pi * basebandHz * double(n) / inputRate;
+        auto sample = converter.feed(float(std::cos(phase) * 0.5), float(std::sin(phase) * 0.5));
+        if (sample) audio[output++] = *sample;
     }
+    if (output != audio.size()) return false;
     const double wanted = toneMagnitude(audio, expectedAudioHz);
     const double image = toneMagnitude(audio, 2 * IqToDaxAudio::audioOffsetHz - expectedAudioHz);
     return wanted > 7000 &&
@@ -32,9 +36,11 @@ bool checkTone(int basebandHz, int expectedAudioHz)
 
 int main()
 {
-    if (!checkTone(-1200, 300) || !checkTone(0, 1500) || !checkTone(1200, 2700)) {
-        std::cerr << "IQ to audio frequency placement failed\n";
-        return 1;
+    for (int rate : {24000, 48000, 96000, 192000}) {
+        if (!checkTone(rate, -1200, 300) || !checkTone(rate, 0, 1500) || !checkTone(rate, 1200, 2700)) {
+            std::cerr << "IQ to audio frequency placement failed at " << rate << " samples/s\n";
+            return 1;
+        }
     }
     std::cout << "IQ to audio frequency placement passed\n";
     return 0;
