@@ -80,6 +80,13 @@ public:
         command("client gui");
         std::ostringstream mhz; mhz << std::fixed << std::setprecision(6) << frequency_ / 1e6;
         pan_ = parseId(firstField(command("display pan c freq=" + mhz.str() + " ant=" + antenna_)));
+        try {
+            const std::string info = command("display pan rfgain_info " + hexId(pan_));
+            std::stringstream fields(info); std::string value;
+            if (std::getline(fields, value, ',')) rfGainMin_ = std::stod(value);
+            if (std::getline(fields, value, ',')) rfGainMax_ = std::stod(value);
+            if (std::getline(fields, value, ',')) rfGainStep_ = std::stod(value);
+        } catch (...) { rfGainMin_ = rfGainMax_ = rfGainStep_ = 0; }
         command("display pan s " + hexId(pan_) + " daxiq_channel=" + std::to_string(channel_));
         configureRate();
         stream_ = parseId(firstField(command("stream create type=dax_iq daxiq_channel=" + std::to_string(channel_))));
@@ -114,6 +121,26 @@ public:
     void setAntenna(const int direction, const size_t, const std::string &antenna) override
     { checkRx(direction); command("display pan set " + hexId(pan_) + " ant=" + antenna); antenna_ = antenna; }
     std::string getAntenna(const int, const size_t) const override { return antenna_; }
+    std::vector<std::string> listGains(const int direction, const size_t) const override
+    { return direction == SOAPY_SDR_RX && rfGainMax_ > rfGainMin_ ? std::vector<std::string>{"RF"} : std::vector<std::string>{}; }
+    void setGain(const int direction, const size_t, const double value) override
+    { setGain(direction, 0, "RF", value); }
+    void setGain(const int direction, const size_t, const std::string &name, const double value) override
+    {
+        checkRx(direction);
+        if (name != "RF" || rfGainMax_ <= rfGainMin_) throw std::runtime_error("Unsupported gain control");
+        if (!std::isfinite(value) || value < rfGainMin_ || value > rfGainMax_) throw std::runtime_error("RF gain out of range");
+        double snapped = rfGainStep_ > 0 ? rfGainMin_ + std::round((value - rfGainMin_) / rfGainStep_) * rfGainStep_ : value;
+        std::ostringstream gain; gain << snapped;
+        command("display pan set " + hexId(pan_) + " rfgain=" + gain.str());
+        rfGain_ = snapped;
+    }
+    double getGain(const int, const size_t) const override { return rfGain_; }
+    double getGain(const int, const size_t, const std::string &) const override { return rfGain_; }
+    SoapySDR::Range getGainRange(const int, const size_t) const override
+    { return SoapySDR::Range(rfGainMin_, rfGainMax_, rfGainStep_); }
+    SoapySDR::Range getGainRange(const int, const size_t, const std::string &) const override
+    { return SoapySDR::Range(rfGainMin_, rfGainMax_, rfGainStep_); }
     SoapySDR::Stream *setupStream(const int direction, const std::string &format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &) override
     { checkRx(direction); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only RX channel 0 CF32 is supported"); return reinterpret_cast<SoapySDR::Stream *>(this); }
     void closeStream(SoapySDR::Stream *) override { active_ = false; }
@@ -196,6 +223,7 @@ private:
     int tcp_ = -1, udp_ = -1, channel_ = 1, rate_ = 48000;
     uint32_t serial_ = 0, pan_ = 0, stream_ = 0;
     double frequency_ = 14074000;
+    double rfGain_ = 0, rfGainMin_ = 0, rfGainMax_ = 0, rfGainStep_ = 0;
     bool active_ = false;
     std::string ip_, antenna_, received_;
     std::vector<float> pending_;

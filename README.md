@@ -23,13 +23,7 @@ SoapySDRUtil --probe="driver=flex6000,addr=192.168.1.120"
 
 If you used another build directory, put its absolute path in `SOAPY_SDR_PLUGIN_PATH`. `--find` with an explicit address only checks that SoapySDR loaded the module; `--probe` actually connects to the radio.
 
-SDR Oxide can open the module directly from the same terminal:
-
-```sh
-sdroxide --device "driver=flex6000"
-```
-
-A desktop launcher does not inherit environment variables exported in a separate terminal. To use the module without setting `SOAPY_SDR_PLUGIN_PATH`, install it with `sudo cmake --install build`, then restart SDR Oxide.
+A desktop application does not inherit environment variables exported in a separate terminal. To use the module without setting `SOAPY_SDR_PLUGIN_PATH`, install it with `sudo cmake --install build`, then restart the application.
 
 ## Use
 
@@ -50,7 +44,7 @@ Device arguments:
 | `dax_channel` | `1` | DAX IQ channel, 1 through 4 |
 | `antenna` | `ANT1` | Initial receive antenna |
 
-The module exposes one RX channel in `CF32` format. Frequency, sample rate, and antenna can be changed through SoapySDR. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply. DAX IQ is a receive path, so this module does not expose TX.
+The module exposes one RX channel in `CF32` format. Frequency, sample rate, antenna, and the radio's panadapter RF gain can be changed through SoapySDR. The RF gain range is read from the connected radio. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply. DAX IQ is a receive path, so the stable module does not expose TX.
 
 This has been compiled against SoapySDR 0.8.1. Live operation still needs testing with a FLEX-6000 radio and firmware. If you can provide a radio model, firmware version, and a short capture, the stream behavior can be checked against the actual device.
 
