@@ -77,7 +77,7 @@ public:
         freeaddrinfo(result);
         if (!connected) throw std::runtime_error("Cannot connect to Flex TCP port 4992");
         command("client udpport " + std::to_string(ntohs(local.sin_port)));
-        command("client gui"); command("client program SoapyFlex6000");
+        command("client gui");
         std::ostringstream mhz; mhz << std::fixed << std::setprecision(6) << frequency_ / 1e6;
         pan_ = parseId(firstField(command("display pan c freq=" + mhz.str() + " ant=" + antenna_)));
         command("display pan s " + hexId(pan_) + " daxiq_channel=" + std::to_string(channel_));

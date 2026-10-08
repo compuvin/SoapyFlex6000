@@ -12,7 +12,16 @@ cmake --build build
 sudo cmake --install build
 ```
 
-For an uninstalled build, set `SOAPY_SDR_PLUGIN_PATH` to the build directory.
+For an uninstalled build, set `SOAPY_SDR_PLUGIN_PATH` to the build directory. Run this from the project directory, even if you normally work elsewhere:
+
+```sh
+export SOAPY_SDR_PLUGIN_PATH="$PWD/build"
+SoapySDRUtil --info | grep flex6000
+SoapySDRUtil --find="driver=flex6000,addr=192.168.1.120"
+SoapySDRUtil --probe="driver=flex6000,addr=192.168.1.120"
+```
+
+If you used another build directory, put its absolute path in `SOAPY_SDR_PLUGIN_PATH`. `--find` with an explicit address only checks that SoapySDR loaded the module; `--probe` actually connects to the radio.
 
 ## Use
 
