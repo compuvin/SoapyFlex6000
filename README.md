@@ -1,6 +1,6 @@
 # SoapyFlex6000
 
-A small, receive-only SoapySDR module for FLEX-6000 radios. It creates a DAX IQ stream and passes complex float samples to the SoapySDR application. Signal processing stays in the application.
+A small SoapySDR module for FLEX-6000 radios. It passes DAX IQ receive samples to the application. This experimental branch also offers opt-in, narrowband transmit through DAX audio.
 
 ## Build
 
@@ -43,10 +43,19 @@ Device arguments:
 | `rate` | `48000` | DAX IQ sample rate: 24000, 48000, 96000, or 192000 samples/s |
 | `dax_channel` | `1` | DAX IQ channel, 1 through 4 |
 | `antenna` | `ANT1` | Initial receive antenna |
+| `tx_path` | unset | Set to `dax_audio` to expose the experimental TX channel |
 
-The module exposes one RX channel in `CF32` format. Frequency, sample rate, antenna, and the radio's panadapter RF gain can be changed through SoapySDR. The RF gain range is read from the connected radio. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply. DAX IQ is a receive path, so the stable module does not expose TX.
+The module exposes one RX channel in `CF32` format. Frequency, sample rate, antenna, and the radio's panadapter RF gain can be changed through SoapySDR. The RF gain range is read from the connected radio. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply.
 
-This has been compiled against SoapySDR 0.8.1 and probed successfully with a FLEX-6700. Receive sample streaming remains unverified. This driver's transmit path is still experimental and is not exposed by the stable module.
+This has been compiled against SoapySDR 0.8.1 and probed successfully with a FLEX-6700. Receive sample streaming remains unverified. The stable `main` branch remains RX only.
+
+## Experimental DAX audio transmit
+
+Set `tx_path=dax_audio` in the Soapy device arguments to expose one `CF32` TX channel. Its sample rate is fixed at 24,000 samples/s and its usable RF bandwidth is 2,400 Hz. The driver shifts complex baseband to a 1,500 Hz audio center, selects a DIGU slice 1,500 Hz below the Soapy TX center frequency, and sends 16-bit mono DAX audio. The Soapy application must keep its transmitted signal within ±1,200 Hz of its center frequency; the driver does not filter or resample it. The radio's transmit filter must pass roughly 300–2,700 Hz for the full advertised width.
+
+TX starts when the application activates its TX stream and stops when it deactivates or closes that stream. The driver attempts to restore the radio's prior DAX audio source afterward. Use `ANT1` or `ANT2` as the TX antenna. This path supports narrowband signals, not wideband IQ transmission.
+
+A three-second 1,700 Hz audio test using a FLEX-6700 completed with a TX indication and no apparent radio restart. RF output was not independently measured. This feature remains experimental; test into a suitable load before using an antenna.
 
 The experimental IQ waveform setup disrupted the radio's control service without PTT. See [transmit investigation notes](TX_NOTES.md) before using that branch.
 

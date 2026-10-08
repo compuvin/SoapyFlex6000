@@ -2,17 +2,21 @@
 #include <SoapySDR/Registry.hpp>
 #include <SoapySDR/Formats.hpp>
 #include <SoapySDR/Errors.hpp>
+#include "IqToDaxAudio.hpp"
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <array>
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -58,12 +62,16 @@ class Flex final : public SoapySDR::Device {
 public:
     explicit Flex(const SoapySDR::Kwargs &args)
     {
+        txEnabled_ = arg(args, "tx_path", "") == "dax_audio";
+        if (!arg(args, "tx_path", "").empty() && !txEnabled_)
+            throw std::runtime_error("tx_path must be dax_audio");
         ip_ = arg(args, "addr", ""); if (ip_.empty()) ip_ = discover();
         if (ip_.empty()) throw std::runtime_error("No Flex radio discovered; specify addr=IP");
         channel_ = std::stoi(arg(args, "dax_channel", "1"));
         if (channel_ < 1 || channel_ > 4) throw std::runtime_error("dax_channel must be 1..4");
         antenna_ = arg(args, "antenna", "ANT1");
         frequency_ = std::stod(arg(args, "frequency", "14074000"));
+        txFrequency_ = frequency_;
         rate_ = std::stoi(arg(args, "rate", "48000"));
         if (std::find(rates_.begin(), rates_.end(), rate_) == rates_.end()) throw std::runtime_error("rate must be 24000, 48000, 96000 or 192000");
         udp_ = udpSocket(0);
@@ -91,10 +99,19 @@ public:
         configureRate();
         stream_ = parseId(firstField(command("stream create type=dax_iq daxiq_channel=" + std::to_string(channel_))));
         command("stream set " + hexId(stream_) + " daxiq_rate=" + std::to_string(rate_ / 1000));
+        if (txEnabled_) {
+            txAddress_.sin_family = AF_INET;
+            txAddress_.sin_port = htons(4991);
+            if (inet_pton(AF_INET, ip_.c_str(), &txAddress_.sin_addr) != 1)
+                throw std::runtime_error("TX requires an IPv4 radio address");
+        }
     }
     ~Flex() override
     {
         if (tcp_ >= 0) {
+            try { stopTx(); } catch (...) {}
+            try { if (txStream_) command("stream remove " + hexId(txStream_)); } catch (...) {}
+            try { if (txSlice_ >= 0) command("slice remove " + std::to_string(txSlice_)); } catch (...) {}
             try { if (stream_) command("stream remove " + hexId(stream_)); } catch (...) {}
             try { if (pan_) command("display pan remove " + hexId(pan_)); } catch (...) {}
             close(tcp_);
@@ -103,24 +120,28 @@ public:
     }
     std::string getDriverKey() const override { return "flex6000"; }
     std::string getHardwareKey() const override { return "FlexRadio FLEX-6000"; }
+    bool getFullDuplex(const int, const size_t) const override { return false; }
     SoapySDR::Kwargs getHardwareInfo() const override { return {{"addr", ip_}, {"dax_channel", std::to_string(channel_)}}; }
-    size_t getNumChannels(const int direction) const override { return direction == SOAPY_SDR_RX ? 1 : 0; }
+    size_t getNumChannels(const int direction) const override { return direction == SOAPY_SDR_RX ? 1 : size_t(txEnabled_); }
     std::vector<std::string> getStreamFormats(const int direction, const size_t) const override
-    { return direction == SOAPY_SDR_RX ? std::vector<std::string>{SOAPY_SDR_CF32} : std::vector<std::string>{}; }
+    { return direction == SOAPY_SDR_RX || txEnabled_ ? std::vector<std::string>{SOAPY_SDR_CF32} : std::vector<std::string>{}; }
     std::string getNativeStreamFormat(const int, const size_t, double &fullScale) const override
     { fullScale = 1.0; return SOAPY_SDR_CF32; }
-    std::vector<double> listSampleRates(const int, const size_t) const override
-    { return {24000, 48000, 96000, 192000}; }
+    std::vector<double> listSampleRates(const int direction, const size_t) const override
+    { return direction == SOAPY_SDR_TX ? std::vector<double>{24000} : std::vector<double>{24000, 48000, 96000, 192000}; }
     void setSampleRate(const int direction, const size_t, const double rate) override
-    { checkRx(direction); int r = int(std::lround(rate)); if (std::find(rates_.begin(), rates_.end(), r) == rates_.end()) throw std::runtime_error("Unsupported DAX IQ rate"); rate_ = r; configureRate(); }
-    double getSampleRate(const int, const size_t) const override { return rate_; }
+    { if (direction == SOAPY_SDR_TX) { if (!txEnabled_ || rate != 24000) throw std::runtime_error("TX requires 24000 samples/s"); return; } checkRx(direction); int r = int(std::lround(rate)); if (std::find(rates_.begin(), rates_.end(), r) == rates_.end()) throw std::runtime_error("Unsupported DAX IQ rate"); rate_ = r; configureRate(); }
+    double getSampleRate(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? 24000 : rate_; }
     void setFrequency(const int direction, const size_t, const double frequency, const SoapySDR::Kwargs &) override
-    { checkRx(direction); if (frequency <= 0) throw std::runtime_error("Invalid frequency"); std::ostringstream s; s << std::fixed << std::setprecision(6) << frequency / 1e6; command("display pan set " + hexId(pan_) + " center=" + s.str()); frequency_ = frequency; }
-    double getFrequency(const int, const size_t) const override { return frequency_; }
-    std::vector<std::string> listAntennas(const int, const size_t) const override { return {"ANT1", "ANT2", "RX_A", "RX_B"}; }
+    { if (frequency <= 0) throw std::runtime_error("Invalid frequency"); if (direction == SOAPY_SDR_TX) { if (!txEnabled_ || txActive_) throw std::runtime_error("Cannot retune active TX"); txFrequency_ = frequency; if (txSlice_ >= 0) tuneTx(); return; } checkRx(direction); std::ostringstream s; s << std::fixed << std::setprecision(6) << frequency / 1e6; command("display pan set " + hexId(pan_) + " center=" + s.str()); frequency_ = frequency; }
+    double getFrequency(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? txFrequency_ : frequency_; }
+    std::vector<std::string> listAntennas(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? std::vector<std::string>{"ANT1", "ANT2"} : std::vector<std::string>{"ANT1", "ANT2", "RX_A", "RX_B"}; }
     void setAntenna(const int direction, const size_t, const std::string &antenna) override
-    { checkRx(direction); command("display pan set " + hexId(pan_) + " ant=" + antenna); antenna_ = antenna; }
-    std::string getAntenna(const int, const size_t) const override { return antenna_; }
+    { if (direction == SOAPY_SDR_TX) { if (!txEnabled_ || (antenna != "ANT1" && antenna != "ANT2") || txActive_) throw std::runtime_error("Invalid TX antenna or active TX"); txAntenna_ = antenna; if (txSlice_ >= 0) command("slice set " + std::to_string(txSlice_) + " txant=" + txAntenna_); return; } checkRx(direction); command("display pan set " + hexId(pan_) + " ant=" + antenna); antenna_ = antenna; }
+    std::string getAntenna(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? txAntenna_ : antenna_; }
+    std::vector<double> listBandwidths(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? std::vector<double>{2400} : std::vector<double>{}; }
+    double getBandwidth(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? 2400 : 0; }
+    void setBandwidth(const int direction, const size_t, const double bandwidth) override { if (direction != SOAPY_SDR_TX || !txEnabled_ || bandwidth != 2400) throw std::runtime_error("TX bandwidth is fixed at 2400 Hz"); }
     std::vector<std::string> listGains(const int direction, const size_t) const override
     { return direction == SOAPY_SDR_RX && rfGainMax_ > rfGainMin_ ? std::vector<std::string>{"RF"} : std::vector<std::string>{}; }
     void setGain(const int direction, const size_t, const double value) override
@@ -135,21 +156,46 @@ public:
         command("display pan set " + hexId(pan_) + " rfgain=" + gain.str());
         rfGain_ = snapped;
     }
-    double getGain(const int, const size_t) const override { return rfGain_; }
-    double getGain(const int, const size_t, const std::string &) const override { return rfGain_; }
-    SoapySDR::Range getGainRange(const int, const size_t) const override
-    { return SoapySDR::Range(rfGainMin_, rfGainMax_, rfGainStep_); }
-    SoapySDR::Range getGainRange(const int, const size_t, const std::string &) const override
-    { return SoapySDR::Range(rfGainMin_, rfGainMax_, rfGainStep_); }
+    double getGain(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? 0 : rfGain_; }
+    double getGain(const int direction, const size_t, const std::string &) const override { return getGain(direction, 0); }
+    SoapySDR::Range getGainRange(const int direction, const size_t) const override
+    { return direction == SOAPY_SDR_TX ? SoapySDR::Range(0, 0) : SoapySDR::Range(rfGainMin_, rfGainMax_, rfGainStep_); }
+    SoapySDR::Range getGainRange(const int direction, const size_t, const std::string &) const override
+    { return getGainRange(direction, 0); }
     SoapySDR::Stream *setupStream(const int direction, const std::string &format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &) override
-    { checkRx(direction); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only RX channel 0 CF32 is supported"); return reinterpret_cast<SoapySDR::Stream *>(this); }
-    void closeStream(SoapySDR::Stream *) override { active_ = false; }
+    { if (direction == SOAPY_SDR_TX && !txEnabled_) throw std::runtime_error("TX requires tx_path=dax_audio"); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only channel 0 CF32 is supported"); return direction == SOAPY_SDR_TX ? txHandle() : rxHandle(); }
+    void closeStream(SoapySDR::Stream *stream) override { if (stream == txHandle()) stopTx(); else active_ = false; }
     size_t getStreamMTU(SoapySDR::Stream *) const override { return 512; }
-    int activateStream(SoapySDR::Stream *, const int flags, const long long, const size_t) override
-    { if (flags) return SOAPY_SDR_NOT_SUPPORTED; active_ = true; pending_.clear(); offset_ = 0; return 0; }
-    int deactivateStream(SoapySDR::Stream *, const int, const long long) override { active_ = false; return 0; }
-    int readStream(SoapySDR::Stream *, void * const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs) override
+    int activateStream(SoapySDR::Stream *stream, const int flags, const long long, const size_t) override
+    { if (flags) return SOAPY_SDR_NOT_SUPPORTED; if (stream == txHandle()) { startTx(); return 0; } active_ = true; pending_.clear(); offset_ = 0; return 0; }
+    int deactivateStream(SoapySDR::Stream *stream, const int, const long long) override { if (stream == txHandle()) return stopTx() ? 0 : SOAPY_SDR_STREAM_ERROR; active_ = false; return 0; }
+    int writeStream(SoapySDR::Stream *stream, const void * const *buffs, const size_t numElems, int &flags, const long long, const long timeoutUs) override
     {
+        if (stream != txHandle() || !txActive_ || !buffs || !buffs[0] || flags) return SOAPY_SDR_STREAM_ERROR;
+        const auto *iq = static_cast<const float *>(buffs[0]);
+        size_t consumed = 0;
+        const auto deadline = timeoutUs < 0 ? std::chrono::steady_clock::time_point::max() :
+            std::chrono::steady_clock::now() + std::chrono::microseconds(timeoutUs);
+        try {
+            while (consumed < numElems) {
+                if (txFill_ == txSamples_.size()-1 && nextPacket_ > deadline)
+                    return consumed ? int(consumed) : SOAPY_SDR_TIMEOUT;
+                txSamples_[txFill_++] = converter_.convert(iq[2*consumed], iq[2*consumed+1]);
+                ++consumed;
+                if (txFill_ != txSamples_.size()) continue;
+                auto now = std::chrono::steady_clock::now();
+                if (now < nextPacket_) std::this_thread::sleep_until(nextPacket_);
+                sendTxPacket(); txFill_ = 0;
+                nextPacket_ += std::chrono::microseconds(5333);
+                if (nextPacket_ < std::chrono::steady_clock::now()) nextPacket_ = std::chrono::steady_clock::now();
+            }
+        } catch (...) { stopTx(); return SOAPY_SDR_STREAM_ERROR; }
+        flags = 0;
+        return int(consumed);
+    }
+    int readStream(SoapySDR::Stream *stream, void * const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs) override
+    {
+        if (stream != rxHandle()) return SOAPY_SDR_STREAM_ERROR;
         flags = 0; timeNs = 0;
         if (!active_ || !buffs || !buffs[0]) return SOAPY_SDR_STREAM_ERROR;
         auto *dst = static_cast<float *>(buffs[0]); size_t copied = 0;
@@ -189,6 +235,55 @@ public:
         return int(copied);
     }
 private:
+    SoapySDR::Stream *rxHandle() { return reinterpret_cast<SoapySDR::Stream *>(&rxTag_); }
+    SoapySDR::Stream *txHandle() { return reinterpret_cast<SoapySDR::Stream *>(&txTag_); }
+    void tuneTx() { std::ostringstream s; s << std::fixed << std::setprecision(6) << (txFrequency_ - IqToDaxAudio::audioOffsetHz) / 1e6; command("slice t " + std::to_string(txSlice_) + " " + s.str()); }
+    void startTx()
+    {
+        if (!txEnabled_ || txActive_) return;
+        try {
+            txDaxStatus_.reset();
+            previousDax_.reset();
+            command("sub tx all");
+            command("radio uptime");
+            if (!txDaxStatus_) throw std::runtime_error("Cannot determine current transmit DAX source");
+            previousDax_ = *txDaxStatus_;
+            if (txSlice_ < 0) {
+                std::ostringstream s; s << std::fixed << std::setprecision(6) << (txFrequency_ - IqToDaxAudio::audioOffsetHz) / 1e6;
+                txSlice_ = std::stoi(firstField(command("slice create pan=" + hexId(pan_) + " freq=" + s.str() + " mode=DIGU")));
+                command("slice set " + std::to_string(txSlice_) + " txant=" + txAntenna_);
+                tuneTx();
+            }
+            command("client set send_reduced_bw_dax=true");
+            if (!txStream_) txStream_ = parseId(firstField(command("stream create type=dax_tx")));
+            command("stream set " + hexId(txStream_) + " tx=1");
+            command("slice set " + std::to_string(txSlice_) + " tx=1");
+            command("transmit set dax=1");
+            command("xmit 1"); txActive_ = true;
+            converter_.reset(); txFill_ = 0; txCount_ = 0;
+            nextPacket_ = std::chrono::steady_clock::now();
+        } catch (...) { try { command("xmit 0"); } catch (...) {} try { if (previousDax_) command("transmit set dax=" + std::to_string(*previousDax_)); } catch (...) {} throw; }
+    }
+    bool stopTx()
+    {
+        if (!txActive_) return true;
+        try { command("xmit 0"); } catch (...) { return false; }
+        txActive_ = false;
+        try { if (previousDax_) command("transmit set dax=" + std::to_string(*previousDax_)); } catch (...) {}
+        txFill_ = 0;
+        return true;
+    }
+    static void put32(uint8_t *p, uint32_t v) { p[0] = uint8_t(v >> 24); p[1] = uint8_t(v >> 16); p[2] = uint8_t(v >> 8); p[3] = uint8_t(v); }
+    void sendTxPacket()
+    {
+        std::array<uint8_t, 284> packet{};
+        put32(packet.data(), 0x18d00047u | (uint32_t(txCount_++ & 15) << 16));
+        put32(packet.data()+4, txStream_);
+        put32(packet.data()+8, 0x001c2d);
+        put32(packet.data()+12, 0x534c0123);
+        for (size_t i=0; i<txSamples_.size(); ++i) { auto v = uint16_t(txSamples_[i]); packet[28+2*i] = uint8_t(v >> 8); packet[29+2*i] = uint8_t(v); }
+        if (sendto(udp_, packet.data(), packet.size(), 0, reinterpret_cast<sockaddr *>(&txAddress_), sizeof txAddress_) != ssize_t(packet.size())) throw std::runtime_error("DAX TX UDP send failed");
+    }
     void checkRx(int direction) const { if (direction != SOAPY_SDR_RX) throw std::runtime_error("Flex DAX IQ is RX only"); }
     void configureRate() { command("dax iq set " + std::to_string(channel_) + " pan=" + hexId(pan_) + " rate=" + std::to_string(rate_ / 1000)); if (stream_) command("stream set " + hexId(stream_) + " daxiq_rate=" + std::to_string(rate_ / 1000)); }
     std::string command(const std::string &cmd)
@@ -205,6 +300,14 @@ private:
             auto end = received_.find('\n');
             if (end != std::string::npos) {
                 std::string reply = received_.substr(0, end); received_.erase(0, end + 1);
+                if (!reply.empty() && reply[0] == 'S') {
+                    auto marker = reply.find("|transmit ");
+                    if (marker != std::string::npos) {
+                        auto dax = reply.find(" dax=", marker);
+                        if (dax != std::string::npos && dax + 5 < reply.size() && (reply[dax+5] == '0' || reply[dax+5] == '1'))
+                            txDaxStatus_ = reply[dax+5] - '0';
+                    }
+                }
                 if (reply.empty() || reply[0] != 'R') continue;
                 auto separator = reply.find('|');
                 if (separator == std::string::npos || reply.substr(1, separator-1) != std::to_string(id)) continue;
@@ -221,6 +324,17 @@ private:
         }
     }
     int tcp_ = -1, udp_ = -1, channel_ = 1, rate_ = 48000;
+    int rxTag_ = 0, txTag_ = 0, txSlice_ = -1;
+    bool txEnabled_ = false, txActive_ = false;
+    std::optional<int> txDaxStatus_, previousDax_;
+    uint32_t txStream_ = 0, txCount_ = 0;
+    double txFrequency_ = 14074000;
+    std::string txAntenna_ = "ANT1";
+    sockaddr_in txAddress_{};
+    IqToDaxAudio converter_;
+    std::array<int16_t, 128> txSamples_{};
+    size_t txFill_ = 0;
+    std::chrono::steady_clock::time_point nextPacket_{};
     uint32_t serial_ = 0, pan_ = 0, stream_ = 0;
     double frequency_ = 14074000;
     double rfGain_ = 0, rfGainMin_ = 0, rfGainMax_ = 0, rfGainStep_ = 0;
