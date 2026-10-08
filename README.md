@@ -1,10 +1,14 @@
 # SoapyFlex6000
 
-A small, receive-only SoapySDR module for FLEX-6000 radios. It creates a DAX IQ stream and passes complex float samples to the SoapySDR application. Signal processing stays in the application.
+A lightweight C++17 [SoapySDR](https://github.com/pothosware/SoapySDR) driver for FLEX-6000 series radios. It bridges the radio's DAX IQ receive stream into a SoapySDR application. Signal processing stays in the application.
+
+This `main` branch provides RX only. The `experimental/dax-audio-tx` branch adds opt-in narrowband TX through DAX audio; that feature remains experimental.
+
+The driver has been compiled against SoapySDR 0.8.1 and probed with a FLEX-6700. Continuous receive streaming has not yet been verified on the radio.
 
 ## Build
 
-Requires a C++17 compiler, CMake, and SoapySDR development headers.
+Requires a C++17 compiler, CMake 3.16 or newer, and SoapySDR development headers and library. Install those through your Linux distribution before building.
 
 ```sh
 cmake -S . -B build
@@ -12,18 +16,18 @@ cmake --build build
 sudo cmake --install build
 ```
 
-For an uninstalled build, set `SOAPY_SDR_PLUGIN_PATH` to the build directory. Run this from the project directory, even if you normally work elsewhere:
+To use an uninstalled build, run these commands from the project directory. `SOAPY_SDR_PLUGIN_PATH` applies only to the current shell and processes started from it:
 
 ```sh
 export SOAPY_SDR_PLUGIN_PATH="$PWD/build"
-SoapySDRUtil --info | grep flex6000
-SoapySDRUtil --find="driver=flex6000,addr=RADIO_IP"
+SoapySDRUtil --info
+SoapySDRUtil --find="driver=flex6000"
 SoapySDRUtil --probe="driver=flex6000,addr=RADIO_IP"
 ```
 
-Replace `RADIO_IP` with your radio's IPv4 address. If you used another build directory, put its absolute path in `SOAPY_SDR_PLUGIN_PATH`. `--find` with an explicit address only checks that SoapySDR loaded the module; `--probe` actually connects to the radio.
+Replace `RADIO_IP` with your radio's IPv4 address. If you used another build directory, put its absolute path in `SOAPY_SDR_PLUGIN_PATH`. `--find` checks discovery and module loading; `--probe` connects to the radio and reports its capabilities. If UDP discovery does not work, include `addr=RADIO_IP` in `--find` as well.
 
-A desktop application does not inherit environment variables exported in a separate terminal. To use the module without setting `SOAPY_SDR_PLUGIN_PATH`, install it with `sudo cmake --install build`, then restart the application.
+A desktop application does not inherit environment variables exported in a separate terminal. Install the module with `sudo cmake --install build` and restart the application if you want it available through the system SoapySDR plugin path.
 
 ## Use
 
@@ -44,11 +48,9 @@ Device arguments:
 | `dax_channel` | `1` | DAX IQ channel, 1 through 4 |
 | `antenna` | `ANT1` | Initial receive antenna |
 
-The module exposes one RX channel in `CF32` format. Frequency, sample rate, antenna, and the radio's panadapter RF gain can be changed through SoapySDR. The RF gain range is read from the connected radio. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply. DAX IQ is a receive path, so the stable module does not expose TX.
+The module exposes one RX channel in `CF32` format. Frequency, sample rate, and the radio's panadapter RF gain can be changed through SoapySDR. Select the initial RX antenna with the `antenna=` device argument; runtime antenna switching was rejected by the tested FLEX-6700. The RF gain range is read from the connected radio. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply.
 
-This has been compiled against SoapySDR 0.8.1 and probed successfully with a FLEX-6700. Receive sample streaming remains unverified. This driver's transmit path is still experimental and is not exposed by the stable module.
-
-The experimental IQ waveform setup disrupted the radio's control service without PTT. See [transmit investigation notes](TX_NOTES.md) before using that branch.
+The experimental IQ waveform setup disrupted the radio's control service without PTT. See [transmit investigation notes](TX_NOTES.md) before using the `experimental/waveform-tx` branch.
 
 ## Protocol references
 
