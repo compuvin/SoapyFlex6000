@@ -17,6 +17,8 @@ The experimental branch now starts TCP and UDP workers before waveform registrat
 
 An opt-in setup-only probe was run through `SoapySDRUtil --make` on the FLEX-6700. The command completed without an API error and did not request PTT. During a monitored repeat, all 30 ICMP pings succeeded, but TCP port 4992 refused a connection immediately afterward. After recovery, `radio uptime` returned 6507 seconds, greater than the earlier 6404 seconds. The radio therefore did not fully reboot during that check. The observed relays and client interruption are consistent with a SmartSDR control service disruption or restart, but the exact failing step is not isolated.
 
+The operator also observed a relay click and a flashing green front-panel light. FlexRadio's FLEX-6000 hardware reference describes flashing green as booting or loading firmware. That physical indication makes this more than a client disconnect, even though ICMP stayed reachable and the reported uptime did not reset. The available observations do not identify which internal component restarted.
+
 The live probe entry point was removed from the normal experimental module. It exists only in the loopback test build. No further live waveform setup is planned until the control service failure has been explained.
 
 ## Separate transmit paths
