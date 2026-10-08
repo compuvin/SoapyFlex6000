@@ -1,4 +1,5 @@
 /build/
+/build-experimental/
 /cmake-build-*/
 *.so
 *.o
