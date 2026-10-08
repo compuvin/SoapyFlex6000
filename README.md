@@ -48,6 +48,8 @@ The module exposes one RX channel in `CF32` format. Frequency, sample rate, ante
 
 This has been compiled against SoapySDR 0.8.1 and probed successfully with a FLEX-6700. Receive sample streaming remains unverified. This driver's transmit path is still experimental and is not exposed by the stable module.
 
+The experimental IQ waveform setup caused a radio reboot without PTT. See [transmit investigation notes](TX_NOTES.md) before using that branch.
+
 ## Protocol references
 
 - [nDAX](https://github.com/kc2g-flex-tools/nDAX): Flex command and VITA UDP patterns.
