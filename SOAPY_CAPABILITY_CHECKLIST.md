@@ -10,7 +10,7 @@ These operations have the same basic meaning on both sides of the bridge. Stream
 - [x] **TX center frequency** — `setFrequency(TX)` maps to `slice t …`. The DIGU slice tunes 1,500 Hz below Soapy's requested RF center.
 - [x] **RX sample rate** — `setSampleRate(RX)` maps to `dax iq set … rate=` and stream rate. Supports 24, 48, 96, and 192 kS/s.
 - [x] **RX RF gain** — `setGain(RX, "RF", dB)` maps to panadapter `rfgain=`; the range comes from `rfgain_info`. The radio chooses the corresponding preamp/attenuator state.
-- [ ] **Runtime RX antenna** — `setAntenna(RX)` targets the panadapter's DAX IQ input. The FLEX-6700 rejected both `display pan set` and `display pan s` with `5000002D`. A slice-based change would not establish that DAX IQ switched antennas. Recreating the panadapter and rebinding DAX IQ is a possible route, but needs a live radio test before implementation.
+- [ ] **Runtime RX antenna** — `setAntenna(RX)` would map to panadapter `ant=`. The FLEX-6700 rejected both `display pan set` and `display pan s` with `5000002D`; investigate a slice-based route before claiming this works.
 - [x] **TX antenna** — `setAntenna(TX)` maps to `slice set … txant=`. ANT1/ANT2 are advertised on the TX channel.
 - [x] **TX start/stop** — `activateStream(TX)` and `deactivateStream(TX)` use `xmit 1/0`, DAX source, and stream. The driver restores the prior DAX source on normal stop.
 
@@ -25,7 +25,7 @@ These use established Soapy methods or device arguments, but are not a direct ad
 - [x] **TX input sample rate** — `setSampleRate(TX)` accepts 24, 48, 96, and 192 kS/s. The driver reduces higher input rates to the fixed 24 kS/s DAX TX rate; the radio's TX audio rate does not change.
 - [x] **Initial RX antenna** — Device `antenna=` argument maps to `display pan c … ant=`. This is a construction argument, rather than runtime Soapy `setAntenna(RX)`; ANT2 device creation succeeded on the FLEX-6700.
 - [x] **TX usable bandwidth** — `getBandwidth(TX)` and `listBandwidths(TX)` report a fixed 2.4 kHz DAX audio limit. `setBandwidth(TX, 0 or 2400)` accepts the fixed choice; it does not alter the radio's TX filter width.
-- [x] **Model-specific RX frequency limits** — `getFrequencyRange(RX)` reads the radio model from `info` and reports the published receiver bands for recognized FLEX-6000 models. An unknown model leaves the range empty. This is standard capability readback, not a tuning control; live readback is still pending.
+- [ ] **Radio-reported frequency limits** — `getFrequencyRange` is standard capability readback, not a control. The probe currently prints an empty range; discover a truthful model-specific range before advertising one.
 
 ### Flex-specific settings
 
