@@ -63,9 +63,10 @@ class Flex final : public SoapySDR::Device {
 public:
     explicit Flex(const SoapySDR::Kwargs &args)
     {
-        txEnabled_ = arg(args, "tx_path", "") == "dax_audio";
-        if (!arg(args, "tx_path", "").empty() && !txEnabled_)
-            throw std::runtime_error("tx_path must be dax_audio");
+        const std::string txPath = arg(args, "tx_path", "dax_audio");
+        txEnabled_ = txPath == "dax_audio";
+        if (!txEnabled_ && txPath != "none")
+            throw std::runtime_error("tx_path must be dax_audio or none");
         ip_ = arg(args, "addr", ""); if (ip_.empty()) ip_ = discover();
         if (ip_.empty()) throw std::runtime_error("No Flex radio discovered; specify addr=IP");
         channel_ = std::stoi(arg(args, "dax_channel", "1"));
@@ -164,7 +165,7 @@ public:
     SoapySDR::Range getGainRange(const int direction, const size_t, const std::string &) const override
     { return getGainRange(direction, 0); }
     SoapySDR::Stream *setupStream(const int direction, const std::string &format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &) override
-    { if (direction == SOAPY_SDR_TX && !txEnabled_) throw std::runtime_error("TX requires tx_path=dax_audio"); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only channel 0 CF32 is supported"); return direction == SOAPY_SDR_TX ? txHandle() : rxHandle(); }
+    { if (direction == SOAPY_SDR_TX && !txEnabled_) throw std::runtime_error("TX disabled by tx_path=none"); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only channel 0 CF32 is supported"); return direction == SOAPY_SDR_TX ? txHandle() : rxHandle(); }
     void closeStream(SoapySDR::Stream *stream) override { if (stream == txHandle()) stopTx(); else active_.store(false); }
     size_t getStreamMTU(SoapySDR::Stream *) const override { return 512; }
     int activateStream(SoapySDR::Stream *stream, const int flags, const long long, const size_t) override

@@ -1,6 +1,6 @@
 # Transmit investigation
 
-The `main` module exposes RX and opt-in narrowband DAX audio TX (`tx_path=dax_audio`). The separate experimental IQ waveform branch remains unsuitable for live radio use.
+The `main` module exposes RX and narrowband DAX audio TX by default. The separate experimental IQ waveform branch remains unsuitable for live radio use.
 
 ## FLEX-6700 observations
 
@@ -29,7 +29,7 @@ The [FlexRadio Waveform SDK](https://github.com/flexradio/waveform-sdk) describe
 
 ## DAX audio TX result
 
-The `main` branch exposes TX only when `tx_path=dax_audio` is supplied. It accepts CF32 at 24,000, 48,000, 96,000, or 192,000 samples/s, reduces higher rates to 24,000 samples/s, shifts the requested center to a 1,500 Hz audio tone in DIGU, and sends reduced-bandwidth mono DAX audio packets. The claimed usable RF bandwidth is 2,400 Hz. The application must bandlimit its IQ signal to ±1,200 Hz; the driver's simple rate reduction does not remove out-of-band content sufficiently for general wideband input.
+The `main` branch exposes TX by default; `tx_path=none` selects an RX-only device. It accepts CF32 at 24,000, 48,000, 96,000, or 192,000 samples/s, reduces higher rates to 24,000 samples/s, shifts the requested center to a 1,500 Hz audio tone in DIGU, and sends reduced-bandwidth mono DAX audio packets. The claimed usable RF bandwidth is 2,400 Hz. The application must bandlimit its IQ signal to ±1,200 Hz; the driver's simple rate reduction does not remove out-of-band content sufficiently for general wideband input.
 
 A temporary Soapy client sent a 200 Hz complex tone at low amplitude for 563 packets, corresponding to about three seconds of 1,700 Hz DAX audio. The FLEX-6700 indicated TX and did not show the earlier restart behavior. All 35 pings during each successful run received replies, and the control port answered a subsequent Soapy probe. The operator did not independently measure RF output. The driver unkeyed after the run. A second three-second run exercised the transmit-source restoration code and completed without an API error.
 

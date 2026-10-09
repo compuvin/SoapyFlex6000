@@ -2,7 +2,7 @@
 
 A lightweight C++17 [SoapySDR](https://github.com/pothosware/SoapySDR) driver for FLEX-6000 series radios. It bridges the radio's DAX IQ receive stream into a SoapySDR application. Signal processing stays in the application.
 
-The `main` branch provides RX and opt-in narrowband TX through DAX audio. Set `tx_path=dax_audio` to expose the TX channel; see [Transmit status](#transmit-status) for its limits.
+The `main` branch provides RX and narrowband TX through DAX audio. Both channels are available by default; see [Transmit status](#transmit-status) for the TX limits.
 
 The driver has been compiled against SoapySDR 0.8.1 and probed with a FLEX-6700. Continuous receive streaming has not yet been verified on the radio.
 
@@ -47,13 +47,13 @@ Device arguments:
 | `rate` | `48000` | DAX IQ sample rate: 24000, 48000, 96000, or 192000 samples/s |
 | `dax_channel` | `1` | DAX IQ channel, 1 through 4 |
 | `antenna` | `ANT1` | Initial receive antenna |
-| `tx_path` | unset | Set to `dax_audio` to expose the narrowband TX channel |
+| `tx_path` | `dax_audio` | TX path; set to `none` for an RX-only device |
 
 The module exposes one RX channel in `CF32` format. Frequency, sample rate, and the radio's panadapter RF gain can be changed through SoapySDR. Select the initial RX antenna with the `antenna=` device argument; runtime antenna switching was rejected by the tested FLEX-6700. The RF gain range is read from the connected radio. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply.
 
 ## Transmit status
 
-Set `tx_path=dax_audio` in the Soapy device arguments to expose one `CF32` TX channel. It accepts 24,000, 48,000, 96,000, or 192,000 samples/s and has 2,400 Hz of usable RF bandwidth. The driver reduces higher input rates to the radio's fixed 24,000 samples/s DAX audio rate, shifts complex baseband to a 1,500 Hz audio center, selects a DIGU slice 1,500 Hz below the Soapy TX center frequency, and sends 16-bit mono DAX audio. The Soapy application must keep its transmitted signal within ±1,200 Hz of its center frequency; the simple rate reduction is not a substitute for application bandlimiting. The radio's transmit filter must pass roughly 300–2,700 Hz for the full advertised width.
+The driver exposes one `CF32` TX channel by default. It accepts 24,000, 48,000, 96,000, or 192,000 samples/s and has 2,400 Hz of usable RF bandwidth. The driver reduces higher input rates to the radio's fixed 24,000 samples/s DAX audio rate, shifts complex baseband to a 1,500 Hz audio center, selects a DIGU slice 1,500 Hz below the Soapy TX center frequency, and sends 16-bit mono DAX audio. The Soapy application must keep its transmitted signal within ±1,200 Hz of its center frequency; the simple rate reduction is not a substitute for application bandlimiting. The radio's transmit filter must pass roughly 300–2,700 Hz for the full advertised width.
 
 TX starts when the application activates its TX stream and stops when it deactivates or closes that stream. The driver attempts to restore the radio's prior DAX audio source afterward. Use `ANT1` or `ANT2` as the TX antenna. This path supports narrowband signals, not wideband IQ transmission.
 

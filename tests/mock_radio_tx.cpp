@@ -114,11 +114,12 @@ int main()
         std::string serverError;
         std::thread server(serve, tcp, std::ref(commands), std::ref(serverError));
         try {
-            SoapySDR::Kwargs args{{"driver", "flex6000"}, {"addr", "127.0.0.1"},
-                                  {"tx_path", "dax_audio"}};
+            SoapySDR::Kwargs args{{"driver", "flex6000"}, {"addr", "127.0.0.1"}};
             auto *radio = SoapySDR::Device::make(args);
             require(radio != nullptr, "Soapy device missing");
             try {
+                require(radio->getNumChannels(SOAPY_SDR_TX) == 1,
+                        "DAX audio TX channel should be available by default");
                 auto *rx = radio->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32);
                 std::array<float, 1024> rxSamples{};
                 void *rxBuffers[] = {rxSamples.data()};

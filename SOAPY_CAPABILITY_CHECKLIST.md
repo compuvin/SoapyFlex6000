@@ -13,7 +13,7 @@ The radio's meter catalog is **dynamic**. `meter list` supplies each meter's ID,
 - [x] **RX RF gain** — `setGain(RX, "RF", dB)` maps to panadapter `rfgain=`; the range comes from `rfgain_info`. The radio chooses the corresponding preamp/attenuator state.
 - [x] **Initial RX antenna** — Device `antenna=` argument maps to `display pan c … ant=`. ANT2 device creation succeeded on the FLEX-6700.
 - [ ] **Runtime RX antenna** — `setAntenna(RX)` would map to panadapter `ant=`. The FLEX-6700 rejected both `display pan set` and `display pan s` with `5000002D`; investigate a slice-based route before claiming this works.
-- [x] **TX antenna** — `setAntenna(TX)` maps to `slice set … txant=`. ANT1/ANT2 are advertised on the opt-in TX channel.
+- [x] **TX antenna** — `setAntenna(TX)` maps to `slice set … txant=`. ANT1/ANT2 are advertised on the TX channel.
 - [x] **TX usable bandwidth** — `getBandwidth(TX)` and `listBandwidths(TX)` report a fixed 2.4 kHz DAX audio limit. `setBandwidth(TX, 0 or 2400)` accepts the fixed choice; it does not alter the radio's global TX filter.
 - [x] **TX start/stop** — `activateStream(TX)` and `deactivateStream(TX)` use `xmit 1/0`, DAX source, and stream. The driver restores the prior DAX source on normal stop.
 - [ ] **Radio-reported frequency limits** — `getFrequencyRange` currently prints an empty range. Discover a truthful model-specific range before advertising one.
