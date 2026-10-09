@@ -25,4 +25,14 @@ The live probe entry point was removed from the normal experimental module. It e
 
 The working transmit path in [AetherSDR](https://github.com/aethersdr/AetherSDR) uses a `dax_tx` audio stream and Flex PTT control. DAX TX carries transmit audio, so it cannot be presented as a generic SoapySDR complex IQ TX stream without additional modulation and bandwidth limits.
 
-The [FlexRadio Waveform SDK](https://github.com/flexradio/waveform-sdk) describes complex sample transport through a waveform. The experimental branch follows that path but remains disabled. Any eventual Soapy TX channel must report its actual sample rate and usable RF bandwidth, manage PTT and stream lifetime, and pass a radio test without resets before it is enabled.
+The [FlexRadio Waveform SDK](https://github.com/flexradio/waveform-sdk) describes complex sample transport through a waveform. The separate waveform branch follows that path but remains disabled. The DAX audio branch below uses a narrower, conventional audio route.
+
+## Experimental DAX audio TX result
+
+The `experimental/dax-audio-tx` branch exposes TX only when `tx_path=dax_audio` is supplied. It accepts CF32 at 24,000, 48,000, 96,000, or 192,000 samples/s, reduces higher rates to 24,000 samples/s, shifts the requested center to a 1,500 Hz audio tone in DIGU, and sends reduced-bandwidth mono DAX audio packets. The claimed usable RF bandwidth is 2,400 Hz. The application must bandlimit its IQ signal to ±1,200 Hz; the driver's simple rate reduction does not remove out-of-band content sufficiently for general wideband input.
+
+A temporary Soapy client sent a 200 Hz complex tone at low amplitude for 563 packets, corresponding to about three seconds of 1,700 Hz DAX audio. The FLEX-6700 indicated TX and did not show the earlier restart behavior. All 35 pings during each successful run received replies, and the control port answered a subsequent Soapy probe. The operator did not independently measure RF output. The driver unkeyed after the run. A second three-second run exercised the transmit-source restoration code and completed without an API error.
+
+An SDR application later requested 192,000 TX samples/s and the original fixed-rate driver rejected activation before PTT. The driver now accepts 24,000, 48,000, 96,000, and 192,000 CF32 input samples/s and reduces higher rates to 24,000 DAX audio samples/s. A three-second temporary Soapy client test at 192,000 samples/s completed without an API error, and all 35 concurrent pings received replies. The operator has not yet reported an SDR application TX check on this revision.
+
+An internal loopback test now opens the Soapy module against a simulated Flex control service and captures its DAX UDP output. It checks the 192,000-to-24,000 sample count, VITA packet class and size, and the order of DAX source selection, PTT, unkey, and source restoration. It sends no commands to a real radio.
