@@ -90,6 +90,9 @@ public:
         bool connected = tcp_ >= 0 && connect(tcp_, result->ai_addr, result->ai_addrlen) == 0;
         freeaddrinfo(result);
         if (!connected) throw std::runtime_error("Cannot connect to Flex TCP port 4992");
+        try { atuPresent_ = command("info").find("atu_present=1") != std::string::npos; }
+        catch (...) {} // Older radios may not report ATU presence.
+        if (atuPresent_) command("sub atu all");
         command("client udpport " + std::to_string(ntohs(local.sin_port)));
         command("client gui");
         std::ostringstream mhz; mhz << std::fixed << std::setprecision(6) << frequency_ / 1e6;
@@ -137,6 +140,38 @@ public:
     std::string getHardwareKey() const override { return "FlexRadio FLEX-6000"; }
     bool getFullDuplex(const int, const size_t) const override { return false; }
     SoapySDR::Kwargs getHardwareInfo() const override { return {{"addr", ip_}, {"dax_channel", std::to_string(channel_)}}; }
+    std::vector<SoapySDR::ArgInfo> getSettingInfo() const override
+    {
+        if (!atuPresent_) return {};
+        SoapySDR::ArgInfo setting;
+        setting.key = "atu";
+        setting.name = "Antenna tuner";
+        setting.description = "True starts an ATU tune cycle; false bypasses the tuner. Reading returns the radio's atu_enabled state.";
+        setting.type = SoapySDR::ArgInfo::BOOL;
+        setting.value = atuEnabled_.value_or(false) ? "true" : "false";
+        return {setting};
+    }
+    void writeSetting(const std::string &key, const std::string &value) override
+    {
+        if (key != "atu" || !atuPresent_) throw std::runtime_error("Unknown Flex setting: " + key);
+        if (value == "true" || value == "1") {
+            if (txActive_) throw std::runtime_error("Cannot tune ATU while Soapy TX is active");
+            ensureTxSlice();
+            command("slice set " + std::to_string(txSlice_) + " tx=1");
+            command("atu start");
+        } else if (value == "false" || value == "0") command("atu bypass");
+        else throw std::runtime_error("ATU setting requires true or false");
+    }
+    std::string readSetting(const std::string &key) const override
+    {
+        if (key != "atu" || !atuPresent_) throw std::runtime_error("Unknown Flex setting: " + key);
+        auto *self = const_cast<Flex *>(this);
+        self->atuEnabled_.reset();
+        self->command("sub atu all");
+        self->command("radio uptime");
+        if (!atuEnabled_) throw std::runtime_error("ATU state readback unavailable");
+        return *atuEnabled_ ? "true" : "false";
+    }
     std::vector<std::string> listSensors() const override
     {
         try {
@@ -371,6 +406,14 @@ private:
     SoapySDR::Stream *rxHandle() { return reinterpret_cast<SoapySDR::Stream *>(&rxTag_); }
     SoapySDR::Stream *txHandle() { return reinterpret_cast<SoapySDR::Stream *>(&txTag_); }
     void tuneTx() { std::ostringstream s; s << std::fixed << std::setprecision(6) << (txFrequency_ - IqToDaxAudio::audioOffsetHz) / 1e6; command("slice t " + std::to_string(txSlice_) + " " + s.str()); }
+    void ensureTxSlice()
+    {
+        if (txSlice_ >= 0) return;
+        std::ostringstream s; s << std::fixed << std::setprecision(6) << (txFrequency_ - IqToDaxAudio::audioOffsetHz) / 1e6;
+        txSlice_ = std::stoi(firstField(command("slice create pan=" + hexId(pan_) + " freq=" + s.str() + " mode=DIGU")));
+        command("slice set " + std::to_string(txSlice_) + " txant=" + txAntenna_);
+        tuneTx();
+    }
     void startTx()
     {
         if (!txEnabled_ || txActive_) return;
@@ -381,12 +424,7 @@ private:
             command("radio uptime");
             if (!txDaxStatus_) throw std::runtime_error("Cannot determine current transmit DAX source");
             previousDax_ = *txDaxStatus_;
-            if (txSlice_ < 0) {
-                std::ostringstream s; s << std::fixed << std::setprecision(6) << (txFrequency_ - IqToDaxAudio::audioOffsetHz) / 1e6;
-                txSlice_ = std::stoi(firstField(command("slice create pan=" + hexId(pan_) + " freq=" + s.str() + " mode=DIGU")));
-                command("slice set " + std::to_string(txSlice_) + " txant=" + txAntenna_);
-                tuneTx();
-            }
+            ensureTxSlice();
             command("client set send_reduced_bw_dax=true");
             if (!txStream_) txStream_ = parseId(firstField(command("stream create type=dax_tx")));
             command("stream set " + hexId(txStream_) + " tx=1");
@@ -435,6 +473,13 @@ private:
             if (end != std::string::npos) {
                 std::string reply = received_.substr(0, end); received_.erase(0, end + 1);
                 if (!reply.empty() && reply[0] == 'S') {
+                    auto atu = reply.find("|atu ");
+                    if (atu != std::string::npos) {
+                        auto enabled = reply.find("atu_enabled=", atu);
+                        if (enabled != std::string::npos && enabled + 12 < reply.size() &&
+                            (reply[enabled+12] == '0' || reply[enabled+12] == '1'))
+                            atuEnabled_ = reply[enabled+12] == '1';
+                    }
                     auto marker = reply.find("|transmit ");
                     if (marker != std::string::npos) {
                         auto dax = reply.find(" dax=", marker);
@@ -469,6 +514,8 @@ private:
     int rxTag_ = 0, txTag_ = 0, txSlice_ = -1;
     bool txEnabled_ = false, txActive_ = false;
     std::optional<int> txDaxStatus_, previousDax_, txRfPower_;
+    bool atuPresent_ = false;
+    std::optional<bool> atuEnabled_;
     uint32_t txStream_ = 0, txCount_ = 0;
     double txFrequency_ = 14074000;
     std::string txAntenna_ = "ANT1";

@@ -63,6 +63,7 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
     send(client, banner.data(), banner.size(), MSG_NOSIGNAL);
     std::string pending;
     int rfPower = 50;
+    bool atuEnabled = true;
     for (;;) {
         char buffer[2048];
         ssize_t n = recv(client, buffer, sizeof buffer, 0);
@@ -81,8 +82,11 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
             const std::string cmd = line.substr(separator + 1);
             commands.push_back(cmd);
             if (starts(cmd, "transmit set rfpower=")) rfPower = std::stoi(cmd.substr(21));
+            if (cmd == "atu start") atuEnabled = true;
+            if (cmd == "atu bypass") atuEnabled = false;
             std::string result;
-            if (cmd == "meter list") result = "meter 17.src=TX-#17.num=3#17.nam=SWR#17.low=1#17.hi=999#17.desc=RF SWR#17.unit=SWR#17.fps=20#18.src=TX-#18.num=4#18.nam=PATEMP#18.low=0#18.hi=100#18.desc=PA Temperature#18.unit=degC#18.fps=0#";
+            if (cmd == "info") result = "model=\"FLEX-6700\",atu_present=1";
+            else if (cmd == "meter list") result = "meter 17.src=TX-#17.num=3#17.nam=SWR#17.low=1#17.hi=999#17.desc=RF SWR#17.unit=SWR#17.fps=20#18.src=TX-#18.num=4#18.nam=PATEMP#18.low=0#18.hi=100#18.desc=PA Temperature#18.unit=degC#18.fps=0#";
             else if (starts(cmd, "display pan c ")) result = "0x40000001,0x42000001";
             else if (starts(cmd, "display pan rfgain_info ")) result = "-10,40,10";
             else if (cmd == "stream create type=dax_iq daxiq_channel=1") result = "0x20000001";
@@ -96,10 +100,16 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
                      starts(cmd, "slice remove ") || starts(cmd, "transmit set dax=") ||
                      starts(cmd, "transmit set rfpower=") ||
                      cmd == "sub meter all" || cmd == "unsub meter all" ||
-                     starts(cmd, "xmit ") || cmd == "sub tx all") {}
+                     starts(cmd, "xmit ") || cmd == "sub tx all" ||
+                     cmd == "sub atu all" || cmd == "atu start" || cmd == "atu bypass") {}
             else { error = "unexpected radio command: " + cmd; break; }
             const std::string reply = "R" + id + "|0|" + result + "\n";
             send(client, reply.data(), reply.size(), MSG_NOSIGNAL);
+            if (cmd == "sub atu all" || cmd == "atu start" || cmd == "atu bypass") {
+                const std::string status = "S12345678|atu status=TUNE_SUCCESSFUL atu_enabled=" +
+                    std::to_string(int(atuEnabled)) + " memories_enabled=1\n";
+                send(client, status.data(), status.size(), MSG_NOSIGNAL);
+            }
             if (cmd == "sub tx all" || starts(cmd, "transmit set rfpower=")) {
                 const std::string status = "S12345678|transmit lo=300 hi=3000 dax=0 rfpower=" + std::to_string(rfPower) + "\n";
                 send(client, status.data(), status.size(), MSG_NOSIGNAL);
@@ -124,6 +134,15 @@ int main()
             auto *radio = SoapySDR::Device::make(args);
             require(radio != nullptr, "Soapy device missing");
             try {
+                const auto settings = radio->getSettingInfo();
+                require(settings.size() == 1 && settings[0].key == "atu" &&
+                        settings[0].type == SoapySDR::ArgInfo::BOOL,
+                        "ATU setting not advertised");
+                require(radio->readSetting("atu") == "true", "initial ATU state wrong");
+                radio->writeSetting("atu", "false");
+                require(radio->readSetting("atu") == "false", "ATU bypass readback wrong");
+                radio->writeSetting("atu", "true");
+                require(radio->readSetting("atu") == "true", "ATU start readback wrong");
                 require(radio->listGains(SOAPY_SDR_TX, 0) == std::vector<std::string>{"RF"},
                         "TX RF gain not advertised");
                 require(radio->getGainRange(SOAPY_SDR_TX, 0).minimum() == -20 &&
@@ -224,6 +243,8 @@ int main()
         close(tcp);
         require(serverError.empty(), serverError.c_str());
         size_t created = indexOf(commands, "stream create type=dax_tx");
+        require(indexOf(commands, "atu bypass") < indexOf(commands, "atu start"),
+                "ATU command sequence wrong");
         size_t selected = indexOf(commands, "transmit set dax=1");
         size_t keyed = indexOf(commands, "xmit 1");
         size_t unkeyed = indexOf(commands, "xmit 0");
