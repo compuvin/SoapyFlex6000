@@ -1,26 +1,33 @@
 # FLEX-6000 ↔ SoapySDR capability checklist
 
-This tracks controls and readbacks useful to a lightweight SoapySDR bridge. A checked box means the current `main` driver implements the mapping; it does not mean every FLEX-6000 model and antenna configuration has been verified. The FLEX-6700 is the current test radio. Direct SoapySDR TX tests have succeeded twice with that radio on a dummy load. `writeSetting` and `readSetting` can carry named Flex-specific controls that have no standard Soapy method. Applications must choose to use those settings.
+This tracks Flex capabilities in two groups: controls with a direct, established SoapySDR operation, and values that a generic Soapy API could carry but whose meaning or key remains Flex-specific. A checked box means the current `main` driver implements the described behavior; it does not imply that every FLEX-6000 model and configuration has been verified.
 
-The radio's meter catalog is **dynamic**. `meter list` supplies each meter's ID, source, name, units, range, and update rate; slice meters can appear or disappear when modes and slices change. The named meters below are those in FlexRadio's published example, not a fixed inventory for every radio. A complete FLEX-6700 inventory requires a live `meter list` capture. No IP address or firmware version should be required in this mapping.
+## Established Soapy controls
 
-## Standard Soapy controls
+These operations have the same basic meaning on both sides of the bridge. Stream activation is included because it is the standard Soapy operation that starts and stops transmission.
 
 - [x] **RX center frequency** — `setFrequency(RX)` maps to `display pan set … center=`. Implemented for the DAX IQ panadapter.
 - [x] **TX center frequency** — `setFrequency(TX)` maps to `slice t …`. The DIGU slice tunes 1,500 Hz below Soapy's requested RF center.
 - [x] **RX sample rate** — `setSampleRate(RX)` maps to `dax iq set … rate=` and stream rate. Supports 24, 48, 96, and 192 kS/s.
-- [x] **TX input sample rate** — `setSampleRate(TX)` accepts 24, 48, 96, and 192 kS/s. The driver reduces higher input rates to the 24 kS/s DAX TX rate.
 - [x] **RX RF gain** — `setGain(RX, "RF", dB)` maps to panadapter `rfgain=`; the range comes from `rfgain_info`. The radio chooses the corresponding preamp/attenuator state.
-- [x] **Initial RX antenna** — Device `antenna=` argument maps to `display pan c … ant=`. ANT2 device creation succeeded on the FLEX-6700.
-- [ ] **Runtime RX antenna** — `setAntenna(RX)` would map to panadapter `ant=`. The FLEX-6700 rejected both `display pan set` and `display pan s` with `5000002D`; investigate a slice-based route before claiming this works.
+- [ ] **Runtime RX antenna** — `setAntenna(RX)` targets the panadapter's DAX IQ input. The FLEX-6700 rejected both `display pan set` and `display pan s` with `5000002D`. A slice-based change would not establish that DAX IQ switched antennas. Recreating the panadapter and rebinding DAX IQ is a possible route, but needs a live radio test before implementation.
 - [x] **TX antenna** — `setAntenna(TX)` maps to `slice set … txant=`. ANT1/ANT2 are advertised on the TX channel.
-- [x] **TX usable bandwidth** — `getBandwidth(TX)` and `listBandwidths(TX)` report a fixed 2.4 kHz DAX audio limit. `setBandwidth(TX, 0 or 2400)` accepts the fixed choice; it does not alter the radio's global TX filter.
 - [x] **TX start/stop** — `activateStream(TX)` and `deactivateStream(TX)` use `xmit 1/0`, DAX source, and stream. The driver restores the prior DAX source on normal stop.
-- [ ] **Radio-reported frequency limits** — `getFrequencyRange` currently prints an empty range. Discover a truthful model-specific range before advertising one.
 
 Sources: [Soapy device API](https://github.com/pothosware/SoapySDR/blob/master/include/SoapySDR/Device.hpp), [Flex panadapter](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-display-pan), [Flex DAX](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-dax), [Flex slice](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-slice).
 
-## Flex-specific Soapy settings
+## Soapy API could carry
+
+### Standard calls with a driver-specific interpretation
+
+These use established Soapy methods or device arguments, but are not a direct adjustment of the corresponding Flex hardware control.
+
+- [x] **TX input sample rate** — `setSampleRate(TX)` accepts 24, 48, 96, and 192 kS/s. The driver reduces higher input rates to the fixed 24 kS/s DAX TX rate; the radio's TX audio rate does not change.
+- [x] **Initial RX antenna** — Device `antenna=` argument maps to `display pan c … ant=`. This is a construction argument, rather than runtime Soapy `setAntenna(RX)`; ANT2 device creation succeeded on the FLEX-6700.
+- [x] **TX usable bandwidth** — `getBandwidth(TX)` and `listBandwidths(TX)` report a fixed 2.4 kHz DAX audio limit. `setBandwidth(TX, 0 or 2400)` accepts the fixed choice; it does not alter the radio's TX filter width.
+- [x] **Model-specific RX frequency limits** — `getFrequencyRange(RX)` reads the radio model from `info` and reports the published receiver bands for recognized FLEX-6000 models. An unknown model leaves the range empty. This is standard capability readback, not a tuning control; live readback is still pending.
+
+### Flex-specific settings
 
 These would be named entries in `getSettingInfo` and accessed through `writeSetting` / `readSetting`, rather than pretending that a radio percentage or filter edge is a Soapy gain in dB. None is exposed yet. Radio-wide settings should report their current value and should not be silently reset when the Soapy device closes.
 
@@ -34,9 +41,11 @@ These would be named entries in `getSettingInfo` and accessed through `writeSett
 
 Sources: [Flex transmit](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-transmit), [Flex ATU](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-atu), [Flex interlock](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-interlock), [Soapy settings API](https://github.com/pothosware/SoapySDR/blob/master/include/SoapySDR/Device.hpp).
 
-## Flex meters → Soapy sensors
+### Flex meters through Soapy sensors
 
-All unchecked: the driver currently exposes **no** Soapy sensors. The proposed implementation is `listSensors` / `getSensorInfo` / `readSensor`. Use Flex meter IDs plus source/ordinal in internal keys so meters with the same display name do not collide. Preserve the radio's units instead of relabeling a value without conversion. Do not report an old sample as current after its meter disappears.
+Soapy has a standard sensor API (`listSensors` / `getSensorInfo` / `readSensor`), but does not define universal names for these Flex meters. The driver currently exposes **no** Soapy sensors. Use Flex meter IDs plus source/ordinal in internal keys so meters with the same display name do not collide. Preserve the radio's units instead of relabeling a value without conversion. Do not report an old sample as current after its meter disappears.
+
+The radio's meter catalog is **dynamic**. `meter list` supplies each meter's ID, source, name, units, range, and update rate; slice meters can appear or disappear when modes and slices change. The named meters below are those in FlexRadio's published example, not a fixed inventory for every radio. A complete FLEX-6700 inventory requires a live `meter list` capture. No IP address or firmware version should be required in this mapping.
 
 - [ ] **RF output** — `FWDPWR`, `REFPWR`, `SWR`. TX channel sensors when TX exists; otherwise device sensors. Forward/reflected power are documented in dBm.
 - [ ] **PA health** — `PATEMP`. Device sensor, °C.

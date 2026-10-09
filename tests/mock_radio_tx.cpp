@@ -79,7 +79,8 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
             const std::string cmd = line.substr(separator + 1);
             commands.push_back(cmd);
             std::string result;
-            if (starts(cmd, "display pan c ")) result = "0x40000001,0x42000001";
+            if (cmd == "info") result = "model=\"FLEX-6700\",scu=2,slice=8";
+            else if (starts(cmd, "display pan c ")) result = "0x40000001,0x42000001";
             else if (starts(cmd, "display pan rfgain_info ")) result = "-10,40,10";
             else if (cmd == "stream create type=dax_iq daxiq_channel=1") result = "0x20000001";
             else if (cmd == "stream create type=dax_tx") result = "0x20000002";
@@ -118,6 +119,12 @@ int main()
             auto *radio = SoapySDR::Device::make(args);
             require(radio != nullptr, "Soapy device missing");
             try {
+                const auto rxRange = radio->getFrequencyRange(SOAPY_SDR_RX, 0);
+                require(rxRange.size() == 2 && rxRange[0].minimum() == 30000 &&
+                        rxRange[0].maximum() == 77000000 && rxRange[1].minimum() == 135000000 &&
+                        rxRange[1].maximum() == 175000000, "FLEX-6700 RX ranges wrong");
+                require(radio->getFrequencyRange(SOAPY_SDR_TX, 0).empty(),
+                        "TX range must not imply unrestricted transmission");
                 require(radio->getNumChannels(SOAPY_SDR_TX) == 1,
                         "DAX audio TX channel should be available by default");
                 auto *rx = radio->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32);

@@ -4,7 +4,7 @@ A lightweight C++17 [SoapySDR](https://github.com/pothosware/SoapySDR) driver fo
 
 The `main` branch provides RX and narrowband TX through DAX audio. Both channels are available by default; see [Transmit status](#transmit-status) for the TX limits.
 
-The driver has been compiled against SoapySDR 0.8.1 and probed with a FLEX-6700. Continuous receive streaming has not yet been verified on the radio.
+The driver has been compiled against SoapySDR 0.8.1 and tested with a FLEX-6700. RX streaming through SoapyRemote worked in ChrissySDR, and changing RX RF gain produced a visible difference. The driver has also been compiled and run on a Raspberry Pi 3 with an ARM operating system.
 
 ## Build
 
@@ -49,7 +49,7 @@ Device arguments:
 | `antenna` | `ANT1` | Initial receive antenna |
 | `tx_path` | `dax_audio` | TX path; set to `none` for an RX-only device |
 
-The module exposes one RX channel in `CF32` format. Frequency, sample rate, and the radio's panadapter RF gain can be changed through SoapySDR. Select the initial RX antenna with the `antenna=` device argument; runtime antenna switching was rejected by the tested FLEX-6700. The RF gain range is read from the connected radio. It creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply.
+The module exposes one RX channel in `CF32` format. Frequency, sample rate, and the radio's panadapter RF gain can be changed through SoapySDR. Select the initial RX antenna with the `antenna=` device argument; runtime antenna switching was rejected by the tested FLEX-6700. The RF gain range is read from the connected radio. `getFrequencyRange(RX)` reports published receive bands for recognized FLEX-6000 models identified by the radio's `info` response; unknown models report no range. This model readback has an offline protocol test but has not yet been verified on the radio. The driver creates its own GUI client and panadapter; the radio's available client and DAX IQ resources still apply.
 
 ## Transmit status
 
@@ -59,7 +59,7 @@ TX starts when the application activates its TX stream and stops when it deactiv
 
 Direct SoapySDR tests transmitted successfully twice with a FLEX-6700 connected to a dummy load. RF output was not independently measured by the driver. Narrowband DAX audio TX is available on `main`, while broader model and application testing remains to be done.
 
-On the tested FLEX-6700, changing the RX antenna after the panadapter is created currently returns radio error `5000002D`, although `ant list` includes ANT2. Set the initial receive antenna with the `antenna=` device argument until runtime RX antenna switching is resolved. This does not affect the TX antenna setting.
+On the tested FLEX-6700, changing the RX antenna after the panadapter is created currently returns radio error `5000002D`, although `ant list` includes ANT2. The DAX IQ stream follows the panadapter, so a slice antenna change would not establish the intended RX antenna. Recreating the panadapter and rebinding DAX IQ needs a live radio test. Set the initial receive antenna with the `antenna=` device argument until runtime RX antenna switching is resolved. This does not affect the TX antenna setting.
 
 See the [Flex-to-Soapy capability checklist](SOAPY_CAPABILITY_CHECKLIST.md) for controls, meters, current support, and proposed mappings. Checklist entries are planned work unless checked.
 

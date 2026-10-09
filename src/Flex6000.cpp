@@ -88,6 +88,15 @@ public:
         if (!connected) throw std::runtime_error("Cannot connect to Flex TCP port 4992");
         command("client udpport " + std::to_string(ntohs(local.sin_port)));
         command("client gui");
+        try {
+            const std::string info = command("info");
+            const auto key = info.find("model=\"");
+            if (key != std::string::npos) {
+                const auto begin = key + 7;
+                const auto end = info.find('"', begin);
+                if (end != std::string::npos) model_ = info.substr(begin, end - begin);
+            }
+        } catch (...) {} // Older radios may not provide model information.
         std::ostringstream mhz; mhz << std::fixed << std::setprecision(6) << frequency_ / 1e6;
         pan_ = parseId(firstField(command("display pan c freq=" + mhz.str() + " ant=" + antenna_)));
         try {
@@ -137,6 +146,16 @@ public:
     void setFrequency(const int direction, const size_t, const double frequency, const SoapySDR::Kwargs &) override
     { if (frequency <= 0) throw std::runtime_error("Invalid frequency"); if (direction == SOAPY_SDR_TX) { if (!txEnabled_ || txActive_) throw std::runtime_error("Cannot retune active TX"); txFrequency_ = frequency; if (txSlice_ >= 0) tuneTx(); return; } checkRx(direction); std::ostringstream s; s << std::fixed << std::setprecision(6) << frequency / 1e6; command("display pan set " + hexId(pan_) + " center=" + s.str()); frequency_ = frequency; }
     double getFrequency(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? txFrequency_ : frequency_; }
+    SoapySDR::RangeList getFrequencyRange(const int direction, const size_t) const override
+    {
+        if (direction != SOAPY_SDR_RX) return {};
+        if (model_ == "FLEX-6300" || model_ == "FLEX-6400" || model_ == "FLEX-6400M" ||
+            model_ == "FLEX-6600" || model_ == "FLEX-6600M") return {{30000, 54000000}};
+        if (model_ == "FLEX-6500") return {{30000, 77000000}};
+        if (model_ == "FLEX-6700" || model_ == "FLEX-6700R")
+            return {{30000, 77000000}, {135000000, 175000000}};
+        return {};
+    }
     std::vector<std::string> listAntennas(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? std::vector<std::string>{"ANT1", "ANT2"} : std::vector<std::string>{"ANT1", "ANT2", "RX_A", "RX_B"}; }
     void setAntenna(const int direction, const size_t, const std::string &antenna) override
     { if (direction == SOAPY_SDR_TX) { if (!txEnabled_ || (antenna != "ANT1" && antenna != "ANT2") || txActive_) throw std::runtime_error("Invalid TX antenna or active TX"); txAntenna_ = antenna; if (txSlice_ >= 0) command("slice set " + std::to_string(txSlice_) + " txant=" + txAntenna_); return; } checkRx(direction); command("display pan s " + hexId(pan_) + " ant=" + antenna); antenna_ = antenna; }
@@ -349,7 +368,7 @@ private:
     std::atomic<bool> active_{false};
     std::atomic<unsigned> rxGeneration_{0};
     unsigned observedRxGeneration_ = 0;
-    std::string ip_, antenna_, received_;
+    std::string ip_, antenna_, model_, received_;
     std::vector<float> pending_;
     size_t offset_ = 0;
     const std::array<int, 4> rates_{{24000, 48000, 96000, 192000}};
