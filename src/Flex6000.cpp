@@ -18,6 +18,7 @@
 #include <cstring>
 #include <thread>
 #include <iomanip>
+#include <limits>
 #include <optional>
 #include <deque>
 #include <mutex>
@@ -110,6 +111,9 @@ public:
             meterSubscribed_ = true;
         } catch (...) {} // Streaming remains available if metering is unavailable.
         if (txEnabled_) {
+            try { command("sub tx all"); command("radio uptime"); } catch (...) {}
+        }
+        if (txEnabled_) {
             txAddress_.sin_family = AF_INET;
             txAddress_.sin_port = htons(4991);
             if (inet_pton(AF_INET, ip_.c_str(), &txAddress_.sin_addr) != 1)
@@ -196,11 +200,25 @@ public:
     double getBandwidth(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? 2400 : 0; }
     void setBandwidth(const int direction, const size_t, const double bandwidth) override { if (direction != SOAPY_SDR_TX || !txEnabled_ || (bandwidth != 0 && bandwidth != 2400)) throw std::runtime_error("TX bandwidth is fixed at 2400 Hz"); }
     std::vector<std::string> listGains(const int direction, const size_t) const override
-    { return direction == SOAPY_SDR_RX && rfGainMax_ > rfGainMin_ ? std::vector<std::string>{"RF"} : std::vector<std::string>{}; }
+    { return direction == SOAPY_SDR_TX ? (txEnabled_ ? std::vector<std::string>{"RF"} : std::vector<std::string>{}) :
+        (rfGainMax_ > rfGainMin_ ? std::vector<std::string>{"RF"} : std::vector<std::string>{}); }
     void setGain(const int direction, const size_t, const double value) override
     { setGain(direction, 0, "RF", value); }
     void setGain(const int direction, const size_t, const std::string &name, const double value) override
     {
+        if (direction == SOAPY_SDR_TX) {
+            const bool off = std::isinf(value) && value < 0;
+            if (!txEnabled_ || name != "RF" || (!off && (!std::isfinite(value) || value < -20 || value > 0)))
+                throw std::runtime_error("TX RF gain must be -20 to 0 dB, or -inf for RF off");
+            command("radio uptime"); // Consume current transmit status before changing radio-wide drive.
+            if (!txRfPower_) throw std::runtime_error("Cannot read current TX RF power");
+            const int power = off ? 0 : std::clamp(int(std::lround(100 * std::pow(10.0, value / 10.0))), 1, 100);
+            txRfPower_.reset();
+            command("transmit set rfpower=" + std::to_string(power));
+            command("radio uptime");
+            if (!txRfPower_) throw std::runtime_error("TX RF power changed but readback is unavailable");
+            return;
+        }
         checkRx(direction);
         if (name != "RF" || rfGainMax_ <= rfGainMin_) throw std::runtime_error("Unsupported gain control");
         if (!std::isfinite(value) || value < rfGainMin_ || value > rfGainMax_) throw std::runtime_error("RF gain out of range");
@@ -209,10 +227,18 @@ public:
         command("display pan set " + hexId(pan_) + " rfgain=" + gain.str());
         rfGain_ = snapped;
     }
-    double getGain(const int direction, const size_t) const override { return direction == SOAPY_SDR_TX ? 0 : rfGain_; }
+    double getGain(const int direction, const size_t) const override
+    {
+        if (direction != SOAPY_SDR_TX) return rfGain_;
+        if (!txEnabled_) throw std::runtime_error("TX disabled");
+        const_cast<Flex *>(this)->command("radio uptime");
+        if (!txRfPower_) throw std::runtime_error("Cannot read TX RF power");
+        return *txRfPower_ == 0 ? -std::numeric_limits<double>::infinity() :
+            10.0 * std::log10(*txRfPower_ / 100.0);
+    }
     double getGain(const int direction, const size_t, const std::string &) const override { return getGain(direction, 0); }
     SoapySDR::Range getGainRange(const int direction, const size_t) const override
-    { return direction == SOAPY_SDR_TX ? SoapySDR::Range(0, 0) : SoapySDR::Range(rfGainMin_, rfGainMax_, rfGainStep_); }
+    { return direction == SOAPY_SDR_TX ? (txEnabled_ ? SoapySDR::Range(-20, 0) : SoapySDR::Range(0, 0)) : SoapySDR::Range(rfGainMin_, rfGainMax_, rfGainStep_); }
     SoapySDR::Range getGainRange(const int direction, const size_t, const std::string &) const override
     { return getGainRange(direction, 0); }
     SoapySDR::Stream *setupStream(const int direction, const std::string &format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &) override
@@ -414,6 +440,14 @@ private:
                         auto dax = reply.find(" dax=", marker);
                         if (dax != std::string::npos && dax + 5 < reply.size() && (reply[dax+5] == '0' || reply[dax+5] == '1'))
                             txDaxStatus_ = reply[dax+5] - '0';
+                        auto power = reply.find(" rfpower=", marker);
+                        if (power != std::string::npos) {
+                            try {
+                                size_t count = 0;
+                                const int setting = std::stoi(reply.substr(power + 9), &count);
+                                if (count && setting >= 0 && setting <= 100) txRfPower_ = setting;
+                            } catch (...) {}
+                        }
                     }
                 }
                 if (reply.empty() || reply[0] != 'R') continue;
@@ -434,7 +468,7 @@ private:
     int tcp_ = -1, udp_ = -1, channel_ = 1, rate_ = 48000, txRate_ = 24000;
     int rxTag_ = 0, txTag_ = 0, txSlice_ = -1;
     bool txEnabled_ = false, txActive_ = false;
-    std::optional<int> txDaxStatus_, previousDax_;
+    std::optional<int> txDaxStatus_, previousDax_, txRfPower_;
     uint32_t txStream_ = 0, txCount_ = 0;
     double txFrequency_ = 14074000;
     std::string txAntenna_ = "ANT1";

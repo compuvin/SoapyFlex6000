@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -61,6 +62,7 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
     const std::string banner = "V1.4.0.0\nH12345678\n";
     send(client, banner.data(), banner.size(), MSG_NOSIGNAL);
     std::string pending;
+    int rfPower = 50;
     for (;;) {
         char buffer[2048];
         ssize_t n = recv(client, buffer, sizeof buffer, 0);
@@ -78,6 +80,7 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
             const std::string id = line.substr(1, separator - 1);
             const std::string cmd = line.substr(separator + 1);
             commands.push_back(cmd);
+            if (starts(cmd, "transmit set rfpower=")) rfPower = std::stoi(cmd.substr(21));
             std::string result;
             if (cmd == "meter list") result = "meter 17.src=TX-#17.num=3#17.nam=SWR#17.low=1#17.hi=999#17.desc=RF SWR#17.unit=SWR#17.fps=20#18.src=TX-#18.num=4#18.nam=PATEMP#18.low=0#18.hi=100#18.desc=PA Temperature#18.unit=degC#18.fps=0#";
             else if (starts(cmd, "display pan c ")) result = "0x40000001,0x42000001";
@@ -91,13 +94,14 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
                      starts(cmd, "stream set ") || starts(cmd, "stream remove ") ||
                      starts(cmd, "slice set ") || starts(cmd, "slice t ") ||
                      starts(cmd, "slice remove ") || starts(cmd, "transmit set dax=") ||
+                     starts(cmd, "transmit set rfpower=") ||
                      cmd == "sub meter all" || cmd == "unsub meter all" ||
                      starts(cmd, "xmit ") || cmd == "sub tx all") {}
             else { error = "unexpected radio command: " + cmd; break; }
             const std::string reply = "R" + id + "|0|" + result + "\n";
             send(client, reply.data(), reply.size(), MSG_NOSIGNAL);
-            if (cmd == "sub tx all") {
-                const std::string status = "S12345678|transmit lo=300 hi=3000 dax=0\n";
+            if (cmd == "sub tx all" || starts(cmd, "transmit set rfpower=")) {
+                const std::string status = "S12345678|transmit lo=300 hi=3000 dax=0 rfpower=" + std::to_string(rfPower) + "\n";
                 send(client, status.data(), status.size(), MSG_NOSIGNAL);
             }
         }
@@ -120,6 +124,22 @@ int main()
             auto *radio = SoapySDR::Device::make(args);
             require(radio != nullptr, "Soapy device missing");
             try {
+                require(radio->listGains(SOAPY_SDR_TX, 0) == std::vector<std::string>{"RF"},
+                        "TX RF gain not advertised");
+                require(radio->getGainRange(SOAPY_SDR_TX, 0).minimum() == -20 &&
+                        radio->getGainRange(SOAPY_SDR_TX, 0).maximum() == 0,
+                        "TX gain range wrong");
+                require(std::abs(radio->getGain(SOAPY_SDR_TX, 0) + 3.0102999566) < 0.001,
+                        "initial TX gain readback wrong");
+                radio->setGain(SOAPY_SDR_TX, 0, -10);
+                require(std::abs(radio->getGain(SOAPY_SDR_TX, 0) + 10) < 0.001,
+                        "TX gain round trip wrong");
+                radio->setGain(SOAPY_SDR_TX, 0, -std::numeric_limits<double>::infinity());
+                const double offGain = radio->getGain(SOAPY_SDR_TX, 0);
+                require(std::isinf(offGain) && offGain < 0, "TX RF off readback wrong");
+                radio->setGain(SOAPY_SDR_TX, 0, 0);
+                require(radio->getGain(SOAPY_SDR_TX, 0) == 0,
+                        "full TX RF gain readback wrong");
                 const auto sensors = radio->listSensors();
                 require(std::find(sensors.begin(), sensors.end(), "flex_meter_17_TX-_3") != sensors.end(),
                         "SWR meter missing");

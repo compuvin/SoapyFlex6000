@@ -57,6 +57,8 @@ The driver exposes one `CF32` TX channel by default. It accepts 24,000, 48,000, 
 
 TX starts when the application activates its TX stream and stops when it deactivates or closes that stream. The driver attempts to restore the radio's prior DAX audio source afterward. Use `ANT1` or `ANT2` as the TX antenna. This path supports narrowband signals, not wideband IQ transmission.
 
+Soapy TX `RF` gain now controls the radio's `rfpower` setting. The driver uses 0 dB for full relative drive and converts -20 to 0 dB to the radio's 1–100 scale using power ratios; `-inf` requests RF power off (0). `getGain(TX)` uses the radio's transmit status readback. The slider only approximates output watts and the radio's Max Power limit may cap it, so the reported gain describes the radio-reported relative drive rather than calibrated RF output. This control has an offline mock-radio test and still needs a live FLEX-6700 check.
+
 Direct SoapySDR tests transmitted successfully twice with a FLEX-6700 connected to a dummy load. RF output was not independently measured by the driver. Narrowband DAX audio TX is available on `main`, while broader model and application testing remains to be done.
 
 On the tested FLEX-6700, changing the RX antenna after the panadapter is created currently returns radio error `5000002D`, although `ant list` includes ANT2. Set the initial receive antenna with the `antenna=` device argument until runtime RX antenna switching is resolved. This does not affect the TX antenna setting.

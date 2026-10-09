@@ -10,11 +10,12 @@ These operations have the same basic meaning on both sides of the bridge. Stream
 - [x] **TX center frequency** — `setFrequency(TX)` maps to `slice t …`. The DIGU slice tunes 1,500 Hz below Soapy's requested RF center.
 - [x] **RX sample rate** — `setSampleRate(RX)` maps to `dax iq set … rate=` and stream rate. Supports 24, 48, 96, and 192 kS/s.
 - [x] **RX RF gain** — `setGain(RX, "RF", dB)` maps to panadapter `rfgain=`; the range comes from `rfgain_info`. The radio chooses the corresponding preamp/attenuator state.
+- [x] **TX RF gain (`tx_rf_power`)** — `setGain(TX, "RF", dB)` converts relative drive from -20 to 0 dB to `transmit set rfpower=1..100`; negative infinity sets `rfpower=0`. `getGain(TX)` converts radio transmit status back to dB. The scale approximates output power and is subject to the radio's Max Power limit. Implemented and tested offline; live FLEX-6700 verification is pending.
 - [ ] **Runtime RX antenna** — `setAntenna(RX)` would map to panadapter `ant=`. The FLEX-6700 rejected both `display pan set` and `display pan s` with `5000002D`; investigate a slice-based route before claiming this works.
 - [x] **TX antenna** — `setAntenna(TX)` maps to `slice set … txant=`. ANT1/ANT2 are advertised on the TX channel.
 - [x] **TX start/stop** — `activateStream(TX)` and `deactivateStream(TX)` use `xmit 1/0`, DAX source, and stream. The driver restores the prior DAX source on normal stop.
 
-Sources: [Soapy device API](https://github.com/pothosware/SoapySDR/blob/master/include/SoapySDR/Device.hpp), [Flex panadapter](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-display-pan), [Flex DAX](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-dax), [Flex slice](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-slice).
+Sources: [Soapy device API](https://github.com/pothosware/SoapySDR/blob/master/include/SoapySDR/Device.hpp), [Flex panadapter](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-display-pan), [Flex DAX](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-dax), [Flex slice](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-slice), [Flex transmit](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-transmit).
 
 ## Soapy API could carry
 
@@ -29,9 +30,8 @@ These use established Soapy methods or device arguments, but are not a direct ad
 
 ### Flex-specific settings
 
-These would be named entries in `getSettingInfo` and accessed through `writeSetting` / `readSetting`, rather than pretending that a radio percentage or filter edge is a Soapy gain in dB. None is exposed yet. Radio-wide settings should report their current value and should not be silently reset when the Soapy device closes.
+These would be named entries in `getSettingInfo` and accessed through `writeSetting` / `readSetting`. None is exposed yet. Radio-wide settings should report their current value and should not be silently reset when the Soapy device closes.
 
-- [ ] **`tx_rf_power`** — `transmit set rfpower=` controls radio power/drive from 0–100. This is not Soapy `setGain(TX)` in dB. Read back before changing.
 - [ ] **`tx_filter_low`, `tx_filter_high`** — `transmit set filter_low=`, `filter_high=` control global TX audio filter edges. Read and preserve prior values. The fixed Soapy TX bandwidth is only a capability claim.
 - [ ] **`tx_tune_power`, `tx_tune`** — `transmit set tunepower=` and `transmit tune on/off` control station tuning separately from normal sample transmission.
 - [ ] **`atu_start`, `atu_bypass`** — `atu start` and `atu bypass` are available only when the radio has an ATU and is ready. Readback should be a sensor/setting if supported.
