@@ -3,6 +3,7 @@
 #include <SoapySDR/Formats.hpp>
 #include <SoapySDR/Errors.hpp>
 #include "IqToDaxAudio.hpp"
+#include "FlexMeters.hpp"
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
@@ -18,6 +19,8 @@
 #include <thread>
 #include <iomanip>
 #include <optional>
+#include <deque>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -101,6 +104,11 @@ public:
         configureRate();
         stream_ = parseId(firstField(command("stream create type=dax_iq daxiq_channel=" + std::to_string(channel_))));
         command("stream set " + hexId(stream_) + " daxiq_rate=" + std::to_string(rate_ / 1000));
+        try {
+            meters_.catalog(command("meter list"));
+            command("sub meter all");
+            meterSubscribed_ = true;
+        } catch (...) {} // Streaming remains available if metering is unavailable.
         if (txEnabled_) {
             txAddress_.sin_family = AF_INET;
             txAddress_.sin_port = htons(4991);
@@ -112,6 +120,7 @@ public:
     {
         if (tcp_ >= 0) {
             try { stopTx(); } catch (...) {}
+            try { if (meterSubscribed_) command("unsub meter all"); } catch (...) {}
             try { if (txStream_) command("stream remove " + hexId(txStream_)); } catch (...) {}
             try { if (txSlice_ >= 0) command("slice remove " + std::to_string(txSlice_)); } catch (...) {}
             try { if (stream_) command("stream remove " + hexId(stream_)); } catch (...) {}
@@ -124,6 +133,48 @@ public:
     std::string getHardwareKey() const override { return "FlexRadio FLEX-6000"; }
     bool getFullDuplex(const int, const size_t) const override { return false; }
     SoapySDR::Kwargs getHardwareInfo() const override { return {{"addr", ip_}, {"dax_channel", std::to_string(channel_)}}; }
+    std::vector<std::string> listSensors() const override
+    {
+        try {
+            const std::string catalog = const_cast<Flex *>(this)->command("meter list");
+            std::lock_guard<std::mutex> lock(udpMutex_);
+            meters_.catalog(catalog);
+        } catch (...) {} // Keep the last catalog if a refresh is unavailable.
+        std::lock_guard<std::mutex> lock(udpMutex_);
+        std::vector<std::string> keys;
+        for (const auto &[id, meter] : meters_.all()) if (meter.usable()) keys.push_back(meter.key());
+        return keys;
+    }
+    SoapySDR::ArgInfo getSensorInfo(const std::string &key) const override
+    {
+        std::lock_guard<std::mutex> lock(udpMutex_);
+        const auto *meter = meters_.find(key);
+        if (!meter) throw std::runtime_error("Unknown Flex meter: " + key);
+        SoapySDR::ArgInfo info;
+        info.key = key; info.name = meter->name; info.description = meter->description;
+        info.units = meter->units; info.type = SoapySDR::ArgInfo::FLOAT;
+        info.range = SoapySDR::Range(meter->low, meter->high);
+        return info;
+    }
+    std::string readSensor(const std::string &key) const override
+    {
+        auto *self = const_cast<Flex *>(this);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+        do {
+            {
+                std::lock_guard<std::mutex> lock(udpMutex_);
+                const auto *meter = meters_.find(key);
+                if (!meter) throw std::runtime_error("Unknown Flex meter: " + key);
+                const auto age = std::chrono::steady_clock::now() - meter->updated;
+                if (meter->hasValue && age < std::chrono::seconds(meter->fps > 0 ? 5 : 30)) {
+                    std::ostringstream result; result << std::setprecision(8) << meter->value;
+                    return result.str();
+                }
+            }
+            if (self->pumpUdp(10) < 0) break;
+        } while (std::chrono::steady_clock::now() < deadline);
+        throw std::runtime_error("Flex meter has no recent value: " + key);
+    }
     size_t getNumChannels(const int direction) const override { return direction == SOAPY_SDR_RX ? 1 : size_t(txEnabled_); }
     std::vector<std::string> getStreamFormats(const int direction, const size_t) const override
     { return direction == SOAPY_SDR_RX || txEnabled_ ? std::vector<std::string>{SOAPY_SDR_CF32} : std::vector<std::string>{}; }
@@ -169,8 +220,8 @@ public:
     void closeStream(SoapySDR::Stream *stream) override { if (stream == txHandle()) stopTx(); else active_.store(false); }
     size_t getStreamMTU(SoapySDR::Stream *) const override { return 512; }
     int activateStream(SoapySDR::Stream *stream, const int flags, const long long, const size_t) override
-    { if (flags) return SOAPY_SDR_NOT_SUPPORTED; if (stream == txHandle()) { startTx(); return 0; } ++rxGeneration_; active_.store(true); return 0; }
-    int deactivateStream(SoapySDR::Stream *stream, const int, const long long) override { if (stream == txHandle()) return stopTx() ? 0 : SOAPY_SDR_STREAM_ERROR; active_.store(false); return 0; }
+    { if (flags) return SOAPY_SDR_NOT_SUPPORTED; if (stream == txHandle()) { startTx(); return 0; } { std::lock_guard<std::mutex> lock(udpMutex_); iqPackets_.clear(); } ++rxGeneration_; active_.store(true); return 0; }
+    int deactivateStream(SoapySDR::Stream *stream, const int, const long long) override { if (stream == txHandle()) return stopTx() ? 0 : SOAPY_SDR_STREAM_ERROR; active_.store(false); { std::lock_guard<std::mutex> lock(udpMutex_); iqPackets_.clear(); } return 0; }
     int writeStream(SoapySDR::Stream *stream, const void * const *buffs, const size_t numElems, int &flags, const long long, const long timeoutUs) override
     {
         if (stream != txHandle() || !txActive_ || !buffs || !buffs[0] || flags) return SOAPY_SDR_STREAM_ERROR;
@@ -207,18 +258,35 @@ public:
         const unsigned generation = rxGeneration_.load();
         if (generation != observedRxGeneration_) { pending_.clear(); offset_ = 0; observedRxGeneration_ = generation; }
         auto *dst = static_cast<float *>(buffs[0]); size_t copied = 0;
+        bool polled = false;
+        const auto deadline = timeoutUs < 0 ? std::chrono::steady_clock::time_point::max() :
+            std::chrono::steady_clock::now() + std::chrono::microseconds(timeoutUs);
         while (copied < numElems) {
             if (offset_ < pending_.size() / 2) {
                 size_t count = std::min(numElems - copied, pending_.size() / 2 - offset_);
                 std::memcpy(dst + copied * 2, pending_.data() + offset_ * 2, count * 2 * sizeof(float));
                 copied += count; offset_ += count; continue;
             }
-            pollfd p{udp_, POLLIN, 0};
-            int waitMs = copied ? 0 : (timeoutUs < 0 ? -1 : int((timeoutUs + 999) / 1000));
-            int ready = poll(&p, 1, waitMs);
-            if (ready <= 0) return copied ? int(copied) : (ready == 0 ? SOAPY_SDR_TIMEOUT : SOAPY_SDR_STREAM_ERROR);
-            std::array<uint8_t, 8192> packet{};
-            ssize_t n = recv(udp_, packet.data(), packet.size(), 0);
+            std::vector<uint8_t> packet;
+            {
+                std::lock_guard<std::mutex> lock(udpMutex_);
+                if (!iqPackets_.empty()) { packet = std::move(iqPackets_.front()); iqPackets_.pop_front(); }
+            }
+            if (packet.empty()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (copied || (now >= deadline && polled)) return copied ? int(copied) : SOAPY_SDR_TIMEOUT;
+                const auto remaining = timeoutUs < 0 ? 0 :
+                    std::max<long long>(0, std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+                const int waitMs = timeoutUs < 0 ? 100 : int(std::min<long long>(remaining + (now < deadline), 100));
+                const int ready = pumpUdp(waitMs);
+                polled = true;
+                if (ready < 0) return copied ? int(copied) : SOAPY_SDR_STREAM_ERROR;
+                if (ready == 0) continue;
+                std::lock_guard<std::mutex> lock(udpMutex_);
+                if (iqPackets_.empty()) continue;
+                packet = std::move(iqPackets_.front()); iqPackets_.pop_front();
+            }
+            const ssize_t n = ssize_t(packet.size());
             if (n < 32) continue;
             const auto *b = packet.data();
             uint32_t header = be32(b); uint8_t type = uint8_t(header >> 28);
@@ -243,6 +311,37 @@ public:
         return int(copied);
     }
 private:
+    int pumpUdp(int waitMs)
+    {
+        std::lock_guard<std::mutex> lock(udpMutex_);
+        pollfd p{udp_, POLLIN, 0};
+        int ready = poll(&p, 1, waitMs);
+        if (ready <= 0) return ready;
+        std::array<uint8_t, 8192> packet{};
+        ssize_t n = recv(udp_, packet.data(), packet.size(), 0);
+        if (n <= 0) return -1;
+        if (n < 16) return 1;
+        const uint32_t header = be32(packet.data());
+        const uint8_t type = uint8_t(header >> 28);
+        const size_t bytes = std::min(size_t(n), size_t(header & 0xffff) * 4);
+        if (type != 1 && type != 3) return 1;
+        if ((header & 0x08000000) && be32(packet.data() + 8) == 0x001c2d &&
+            be32(packet.data() + 12) == 0x534c8002) {
+            size_t pos = 16;
+            if ((header >> 22 & 3) != 0) pos += 4;
+            if ((header >> 20 & 3) != 0) pos += 8;
+            const size_t end = bytes >= 4 && (header & 0x04000000) ? bytes - 4 : bytes;
+            if (end <= size_t(n) && end >= pos && (end - pos) % 4 == 0)
+                for (; pos < end; pos += 4) {
+                    const uint32_t word = be32(packet.data() + pos);
+                    meters_.value(word >> 16, int16_t(word & 0xffff));
+                }
+        } else if (be32(packet.data() + 4) == stream_) {
+            if (iqPackets_.size() >= 64) iqPackets_.pop_front();
+            iqPackets_.emplace_back(packet.begin(), packet.begin() + n);
+        }
+        return 1;
+    }
     SoapySDR::Stream *rxHandle() { return reinterpret_cast<SoapySDR::Stream *>(&rxTag_); }
     SoapySDR::Stream *txHandle() { return reinterpret_cast<SoapySDR::Stream *>(&txTag_); }
     void tuneTx() { std::ostringstream s; s << std::fixed << std::setprecision(6) << (txFrequency_ - IqToDaxAudio::audioOffsetHz) / 1e6; command("slice t " + std::to_string(txSlice_) + " " + s.str()); }
@@ -296,6 +395,7 @@ private:
     void configureRate() { command("dax iq set " + std::to_string(channel_) + " pan=" + hexId(pan_) + " rate=" + std::to_string(rate_ / 1000)); if (stream_) command("stream set " + hexId(stream_) + " daxiq_rate=" + std::to_string(rate_ / 1000)); }
     std::string command(const std::string &cmd)
     {
+        std::lock_guard<std::mutex> lock(tcpMutex_);
         uint32_t id = ++serial_;
         std::string line = "C" + std::to_string(id) + "|" + cmd + "\n";
         size_t sent = 0;
@@ -350,6 +450,11 @@ private:
     std::atomic<unsigned> rxGeneration_{0};
     unsigned observedRxGeneration_ = 0;
     std::string ip_, antenna_, received_;
+    std::mutex tcpMutex_;
+    mutable std::mutex udpMutex_;
+    mutable FlexMeters meters_;
+    bool meterSubscribed_ = false;
+    std::deque<std::vector<uint8_t>> iqPackets_;
     std::vector<float> pending_;
     size_t offset_ = 0;
     const std::array<int, 4> rates_{{24000, 48000, 96000, 192000}};

@@ -79,7 +79,8 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
             const std::string cmd = line.substr(separator + 1);
             commands.push_back(cmd);
             std::string result;
-            if (starts(cmd, "display pan c ")) result = "0x40000001,0x42000001";
+            if (cmd == "meter list") result = "meter 17.src=TX-#17.num=3#17.nam=SWR#17.low=1#17.hi=999#17.desc=RF SWR#17.unit=SWR#17.fps=20#18.src=TX-#18.num=4#18.nam=PATEMP#18.low=0#18.hi=100#18.desc=PA Temperature#18.unit=degC#18.fps=0#";
+            else if (starts(cmd, "display pan c ")) result = "0x40000001,0x42000001";
             else if (starts(cmd, "display pan rfgain_info ")) result = "-10,40,10";
             else if (cmd == "stream create type=dax_iq daxiq_channel=1") result = "0x20000001";
             else if (cmd == "stream create type=dax_tx") result = "0x20000002";
@@ -90,6 +91,7 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
                      starts(cmd, "stream set ") || starts(cmd, "stream remove ") ||
                      starts(cmd, "slice set ") || starts(cmd, "slice t ") ||
                      starts(cmd, "slice remove ") || starts(cmd, "transmit set dax=") ||
+                     cmd == "sub meter all" || cmd == "unsub meter all" ||
                      starts(cmd, "xmit ") || cmd == "sub tx all") {}
             else { error = "unexpected radio command: " + cmd; break; }
             const std::string reply = "R" + id + "|0|" + result + "\n";
@@ -118,6 +120,27 @@ int main()
             auto *radio = SoapySDR::Device::make(args);
             require(radio != nullptr, "Soapy device missing");
             try {
+                const auto sensors = radio->listSensors();
+                require(std::find(sensors.begin(), sensors.end(), "flex_meter_17_TX-_3") != sensors.end(),
+                        "SWR meter missing");
+                auto swrInfo = radio->getSensorInfo("flex_meter_17_TX-_3");
+                require(swrInfo.name == "SWR" && swrInfo.units == "SWR" &&
+                        swrInfo.range.minimum() == 1, "SWR metadata wrong");
+                const auto portCommand = commands[indexOf(commands, "client udpport ")];
+                const int meterPort = std::stoi(portCommand.substr(std::string("client udpport ").size()));
+                sockaddr_in meterAddress{};
+                meterAddress.sin_family = AF_INET;
+                meterAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                meterAddress.sin_port = htons(uint16_t(meterPort));
+                const std::array<unsigned char, 20> meterPacket{{
+                    0x18,0x00,0x00,0x05, 0x80,0x00,0x00,0x00,
+                    0x00,0x00,0x1c,0x2d, 0x53,0x4c,0x80,0x02,
+                    0x00,0x11,0x01,0x00}};
+                require(sendto(udp, meterPacket.data(), meterPacket.size(), 0,
+                        reinterpret_cast<sockaddr *>(&meterAddress), sizeof meterAddress) ==
+                        ssize_t(meterPacket.size()), "meter packet send failed");
+                require(std::stod(radio->readSensor("flex_meter_17_TX-_3")) == 2.0,
+                        "SWR meter value wrong");
                 require(radio->getNumChannels(SOAPY_SDR_TX) == 1,
                         "DAX audio TX channel should be available by default");
                 auto *rx = radio->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32);
@@ -128,8 +151,26 @@ int main()
                 require(radio->readStream(rx, rxBuffers, 512, rxFlags, rxTime, 0) == SOAPY_SDR_TIMEOUT,
                         "RX read before activation must wait, not fail");
                 require(radio->activateStream(rx) == 0, "RX activation failed");
+                auto updatedMeter = meterPacket;
+                updatedMeter[18] = 0x01; updatedMeter[19] = 0x80;
+                require(sendto(udp, updatedMeter.data(), updatedMeter.size(), 0,
+                        reinterpret_cast<sockaddr *>(&meterAddress), sizeof meterAddress) ==
+                        ssize_t(updatedMeter.size()), "updated meter packet send failed");
                 require(radio->readStream(rx, rxBuffers, 512, rxFlags, rxTime, 1000) == SOAPY_SDR_TIMEOUT,
                         "RX without packets should time out");
+                require(std::stod(radio->readSensor("flex_meter_17_TX-_3")) == 3.0,
+                        "RX read did not process meter packet");
+                const std::array<unsigned char, 36> iqPacket{{
+                    0x18,0xd0,0x00,0x09, 0x20,0x00,0x00,0x01,
+                    0x00,0x00,0x1c,0x2d, 0x53,0x4c,0x00,0x00,
+                    0,0,0,0, 0,0,0,0, 0,0,0,0,
+                    0,0,0x80,0x3f, 0,0,0,0}};
+                require(sendto(udp, iqPacket.data(), iqPacket.size(), 0,
+                        reinterpret_cast<sockaddr *>(&meterAddress), sizeof meterAddress) ==
+                        ssize_t(iqPacket.size()), "IQ packet send failed");
+                require(radio->readStream(rx, rxBuffers, 1, rxFlags, rxTime, 100000) == 1 &&
+                        rxSamples[0] == 1.0f && rxSamples[1] == 0.0f,
+                        "RX IQ packet lost after meter packet");
                 require(radio->deactivateStream(rx) == 0, "RX deactivation failed");
                 require(radio->readStream(rx, rxBuffers, 512, rxFlags, rxTime, 0) == SOAPY_SDR_TIMEOUT,
                         "RX read after deactivation must wait, not fail");

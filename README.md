@@ -63,6 +63,12 @@ On the tested FLEX-6700, changing the RX antenna after the panadapter is created
 
 See the [Flex-to-Soapy capability checklist](SOAPY_CAPABILITY_CHECKLIST.md) for controls, meters, current support, and proposed mappings. Checklist entries are planned work unless checked.
 
+## Metering preview
+
+The driver now requests `meter list`, subscribes to meter updates, and exposes meters with recognized units as device-level Soapy sensors. Keys include the Flex meter ID, source, and source ordinal (for example, `flex_meter_17_TX-_3`); names, descriptions, units, and ranges come from the radio's catalog. `listSensors()` refreshes that catalog. `readSensor()` rejects a meter without a recent value rather than returning an old reading. Meter and DAX IQ packets share the existing UDP connection.
+
+This path passes an offline mock-radio test but has not yet been checked against the FLEX-6700's live meter catalog or values. All meters currently use device-level sensor scope; channel attribution and automatic catalog change notifications remain to be verified.
+
 The experimental IQ waveform setup disrupted the radio's control service without PTT. See [transmit investigation notes](TX_NOTES.md) before using the separate `experimental/waveform-tx` branch.
 
 ## Protocol references
