@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <algorithm>
 #include <cmath>
@@ -164,11 +165,11 @@ public:
     { return getGainRange(direction, 0); }
     SoapySDR::Stream *setupStream(const int direction, const std::string &format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &) override
     { if (direction == SOAPY_SDR_TX && !txEnabled_) throw std::runtime_error("TX requires tx_path=dax_audio"); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only channel 0 CF32 is supported"); return direction == SOAPY_SDR_TX ? txHandle() : rxHandle(); }
-    void closeStream(SoapySDR::Stream *stream) override { if (stream == txHandle()) stopTx(); else active_ = false; }
+    void closeStream(SoapySDR::Stream *stream) override { if (stream == txHandle()) stopTx(); else active_.store(false); }
     size_t getStreamMTU(SoapySDR::Stream *) const override { return 512; }
     int activateStream(SoapySDR::Stream *stream, const int flags, const long long, const size_t) override
-    { if (flags) return SOAPY_SDR_NOT_SUPPORTED; if (stream == txHandle()) { startTx(); return 0; } active_ = true; pending_.clear(); offset_ = 0; return 0; }
-    int deactivateStream(SoapySDR::Stream *stream, const int, const long long) override { if (stream == txHandle()) return stopTx() ? 0 : SOAPY_SDR_STREAM_ERROR; active_ = false; return 0; }
+    { if (flags) return SOAPY_SDR_NOT_SUPPORTED; if (stream == txHandle()) { startTx(); return 0; } ++rxGeneration_; active_.store(true); return 0; }
+    int deactivateStream(SoapySDR::Stream *stream, const int, const long long) override { if (stream == txHandle()) return stopTx() ? 0 : SOAPY_SDR_STREAM_ERROR; active_.store(false); return 0; }
     int writeStream(SoapySDR::Stream *stream, const void * const *buffs, const size_t numElems, int &flags, const long long, const long timeoutUs) override
     {
         if (stream != txHandle() || !txActive_ || !buffs || !buffs[0] || flags) return SOAPY_SDR_STREAM_ERROR;
@@ -199,7 +200,11 @@ public:
     {
         if (stream != rxHandle()) return SOAPY_SDR_STREAM_ERROR;
         flags = 0; timeNs = 0;
-        if (!active_ || !buffs || !buffs[0]) return SOAPY_SDR_STREAM_ERROR;
+        if (!buffs || !buffs[0]) return SOAPY_SDR_STREAM_ERROR;
+        // SoapyRemote starts reading after setupStream, before activateStream.
+        if (!active_.load()) return SOAPY_SDR_TIMEOUT;
+        const unsigned generation = rxGeneration_.load();
+        if (generation != observedRxGeneration_) { pending_.clear(); offset_ = 0; observedRxGeneration_ = generation; }
         auto *dst = static_cast<float *>(buffs[0]); size_t copied = 0;
         while (copied < numElems) {
             if (offset_ < pending_.size() / 2) {
@@ -340,7 +345,9 @@ private:
     uint32_t serial_ = 0, pan_ = 0, stream_ = 0;
     double frequency_ = 14074000;
     double rfGain_ = 0, rfGainMin_ = 0, rfGainMax_ = 0, rfGainStep_ = 0;
-    bool active_ = false;
+    std::atomic<bool> active_{false};
+    std::atomic<unsigned> rxGeneration_{0};
+    unsigned observedRxGeneration_ = 0;
     std::string ip_, antenna_, received_;
     std::vector<float> pending_;
     size_t offset_ = 0;

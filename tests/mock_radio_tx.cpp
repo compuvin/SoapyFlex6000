@@ -1,5 +1,6 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Formats.hpp>
+#include <SoapySDR/Errors.hpp>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -118,6 +119,20 @@ int main()
             auto *radio = SoapySDR::Device::make(args);
             require(radio != nullptr, "Soapy device missing");
             try {
+                auto *rx = radio->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32);
+                std::array<float, 1024> rxSamples{};
+                void *rxBuffers[] = {rxSamples.data()};
+                int rxFlags = 0;
+                long long rxTime = 0;
+                require(radio->readStream(rx, rxBuffers, 512, rxFlags, rxTime, 0) == SOAPY_SDR_TIMEOUT,
+                        "RX read before activation must wait, not fail");
+                require(radio->activateStream(rx) == 0, "RX activation failed");
+                require(radio->readStream(rx, rxBuffers, 512, rxFlags, rxTime, 1000) == SOAPY_SDR_TIMEOUT,
+                        "RX without packets should time out");
+                require(radio->deactivateStream(rx) == 0, "RX deactivation failed");
+                require(radio->readStream(rx, rxBuffers, 512, rxFlags, rxTime, 0) == SOAPY_SDR_TIMEOUT,
+                        "RX read after deactivation must wait, not fail");
+                radio->closeStream(rx);
                 radio->setSampleRate(SOAPY_SDR_TX, 0, 192000);
                 radio->setBandwidth(SOAPY_SDR_TX, 0, 0);
                 require(radio->getSampleRate(SOAPY_SDR_TX, 0) == 192000, "TX rate report wrong");
