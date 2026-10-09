@@ -1,6 +1,6 @@
 # Transmit investigation
 
-The stable `main` module exposes RX only. Do not use the experimental waveform branch to control a live radio yet.
+The `main` module exposes RX and opt-in narrowband DAX audio TX (`tx_path=dax_audio`). The separate experimental IQ waveform branch remains unsuitable for live radio use.
 
 ## FLEX-6700 observations
 
@@ -13,7 +13,7 @@ Successful command replies therefore do not establish that this waveform setup i
 
 The one-off check did not run a waveform event loop or answer waveform commands and VITA packets. AetherSDR's waveform documentation describes a receive loop running before registration and responses to radio-originated commands. Those missing pieces and the rapid teardown are possible contributors, not confirmed causes. The experimental prototype must handle that lifecycle before another live check.
 
-The experimental branch now starts TCP and UDP workers before waveform registration, answers radio-originated waveform commands, uses the named stream IDs returned by registration, returns silence for RX buffers, and creates the slice directly in its waveform mode. An internal loopback test checks setup, a radio-originated command, RX buffer reflection, normal cleanup, and cleanup after a simulated slice rejection. It sends no PTT. A subsequent live setup-only probe still disrupted the control service, so these changes did not resolve the observed failure. TX remains unadvertised.
+The experimental waveform branch now starts TCP and UDP workers before waveform registration, answers radio-originated waveform commands, uses the named stream IDs returned by registration, returns silence for RX buffers, and creates the slice directly in its waveform mode. An internal loopback test checks setup, a radio-originated command, RX buffer reflection, normal cleanup, and cleanup after a simulated slice rejection. It sends no PTT. A subsequent live setup-only probe still disrupted the control service, so these changes did not resolve the observed failure. Waveform TX remains unadvertised.
 
 An opt-in setup-only probe was run through `SoapySDRUtil --make` on the FLEX-6700. The command completed without an API error and did not request PTT. During a monitored repeat, all 30 ICMP pings succeeded, but TCP port 4992 refused a connection immediately afterward. After recovery, `radio uptime` returned 6507 seconds, greater than the earlier 6404 seconds. The radio therefore did not fully reboot during that check. The observed relays and client interruption are consistent with a SmartSDR control service disruption or restart, but the exact failing step is not isolated.
 
@@ -25,14 +25,14 @@ The live probe entry point was removed from the normal experimental module. It e
 
 The working transmit path in [AetherSDR](https://github.com/aethersdr/AetherSDR) uses a `dax_tx` audio stream and Flex PTT control. DAX TX carries transmit audio, so it cannot be presented as a generic SoapySDR complex IQ TX stream without additional modulation and bandwidth limits.
 
-The [FlexRadio Waveform SDK](https://github.com/flexradio/waveform-sdk) describes complex sample transport through a waveform. The separate waveform branch follows that path but remains disabled. The DAX audio branch below uses a narrower, conventional audio route.
+The [FlexRadio Waveform SDK](https://github.com/flexradio/waveform-sdk) describes complex sample transport through a waveform. The separate waveform branch follows that path but remains disabled. The DAX audio path on `main` uses a narrower, conventional audio route.
 
-## Experimental DAX audio TX result
+## DAX audio TX result
 
-The `experimental/dax-audio-tx` branch exposes TX only when `tx_path=dax_audio` is supplied. It accepts CF32 at 24,000, 48,000, 96,000, or 192,000 samples/s, reduces higher rates to 24,000 samples/s, shifts the requested center to a 1,500 Hz audio tone in DIGU, and sends reduced-bandwidth mono DAX audio packets. The claimed usable RF bandwidth is 2,400 Hz. The application must bandlimit its IQ signal to ±1,200 Hz; the driver's simple rate reduction does not remove out-of-band content sufficiently for general wideband input.
+The `main` branch exposes TX only when `tx_path=dax_audio` is supplied. It accepts CF32 at 24,000, 48,000, 96,000, or 192,000 samples/s, reduces higher rates to 24,000 samples/s, shifts the requested center to a 1,500 Hz audio tone in DIGU, and sends reduced-bandwidth mono DAX audio packets. The claimed usable RF bandwidth is 2,400 Hz. The application must bandlimit its IQ signal to ±1,200 Hz; the driver's simple rate reduction does not remove out-of-band content sufficiently for general wideband input.
 
 A temporary Soapy client sent a 200 Hz complex tone at low amplitude for 563 packets, corresponding to about three seconds of 1,700 Hz DAX audio. The FLEX-6700 indicated TX and did not show the earlier restart behavior. All 35 pings during each successful run received replies, and the control port answered a subsequent Soapy probe. The operator did not independently measure RF output. The driver unkeyed after the run. A second three-second run exercised the transmit-source restoration code and completed without an API error.
 
-An SDR application later requested 192,000 TX samples/s and the original fixed-rate driver rejected activation before PTT. The driver now accepts 24,000, 48,000, 96,000, and 192,000 CF32 input samples/s and reduces higher rates to 24,000 DAX audio samples/s. A three-second temporary Soapy client test at 192,000 samples/s completed without an API error, and all 35 concurrent pings received replies. The operator has not yet reported an SDR application TX check on this revision.
+An SDR application later requested 192,000 TX samples/s and the original fixed-rate driver rejected activation before PTT. The driver now accepts 24,000, 48,000, 96,000, and 192,000 CF32 input samples/s and reduces higher rates to 24,000 DAX audio samples/s. A three-second temporary Soapy client test at 192,000 samples/s completed without an API error, and all 35 concurrent pings received replies. The operator subsequently reported two successful direct SoapySDR TX tests on a dummy load. RF output was not independently measured by the driver.
 
 An internal loopback test now opens the Soapy module against a simulated Flex control service and captures its DAX UDP output. It checks the 192,000-to-24,000 sample count, VITA packet class and size, and the order of DAX source selection, PTT, unkey, and source restoration. It sends no commands to a real radio.
