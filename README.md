@@ -67,7 +67,7 @@ See the [Flex-to-Soapy capability checklist](SOAPY_CAPABILITY_CHECKLIST.md) for 
 
 ## Metering preview
 
-The driver now requests `meter list`, subscribes to meter updates, and exposes meters with recognized units as device-level Soapy sensors. Keys include the Flex meter ID, source, and source ordinal (for example, `flex_meter_17_TX-_3`); names, descriptions, units, and ranges come from the radio's catalog. `listSensors()` refreshes that catalog. `readSensor()` rejects a meter without a recent value rather than returning an old reading. Meter and DAX IQ packets share the existing UDP connection.
+The driver now requests `meter list`, subscribes to meter updates, and exposes meters with recognized units as device-level Soapy sensors. Keys include the Flex meter ID, source, and source ordinal (for example, `flex_meter_17_TX-_3`); names, descriptions, units, and ranges come from the radio's catalog. `listSensors()` refreshes that catalog. `readSensor()` returns `nan` for a meter without a recent value rather than returning an old reading or failing the entire device probe. Meter and DAX IQ packets share the existing UDP connection.
 
 If the radio reports an internal ATU, the driver advertises one device setting, `atu`, through SoapySDR's settings API. Writing `true` sends `atu start` and begins a tune cycle; writing `false` sends `atu bypass`. Reading the setting returns the radio's `atu_enabled` status. Starting a tune creates and selects a TX slice if this client does not already have one, so the radio must allow transmission at the selected frequency. This mapping passed an offline mock-radio test but has not yet been tried on the FLEX-6700.
 

@@ -212,7 +212,9 @@ public:
             }
             if (self->pumpUdp(10) < 0) break;
         } while (std::chrono::steady_clock::now() < deadline);
-        throw std::runtime_error("Flex meter has no recent value: " + key);
+        // A catalog entry can exist without an active source (for example, a TX
+        // meter while receiving). Keep it readable without inventing a value.
+        return "nan";
     }
     size_t getNumChannels(const int direction) const override { return direction == SOAPY_SDR_RX ? 1 : size_t(txEnabled_); }
     std::vector<std::string> getStreamFormats(const int direction, const size_t) const override

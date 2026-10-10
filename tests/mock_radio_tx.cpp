@@ -165,6 +165,8 @@ int main()
                 auto swrInfo = radio->getSensorInfo("flex_meter_17_TX-_3");
                 require(swrInfo.name == "SWR" && swrInfo.units == "SWR" &&
                         swrInfo.range.minimum() == 1, "SWR metadata wrong");
+                require(std::isnan(std::stod(radio->readSensor("flex_meter_18_TX-_4"))),
+                        "meter without a live sample should report NaN");
                 const auto portCommand = commands[indexOf(commands, "client udpport ")];
                 const int meterPort = std::stoi(portCommand.substr(std::string("client udpport ").size()));
                 sockaddr_in meterAddress{};
