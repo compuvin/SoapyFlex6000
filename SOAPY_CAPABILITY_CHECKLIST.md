@@ -59,11 +59,11 @@ The radio's meter catalog is **dynamic**. `meter list` supplies each meter's ID,
 
 Meter implementation checklist:
 
-- [ ] Read `meter list` metadata and handle catalog changes.
-- [ ] Subscribe to meter updates; decode VITA meter packets by ID and declared units.
+- [x] Read `meter list` metadata and handle catalog changes.
+- [x] Subscribe to meter updates; decode VITA meter packets by ID and declared units.
 - [ ] Attribute radio, TX, panadapter, and slice meters to the correct Soapy scope.
-- [ ] Expose units, display names, and ranges through `getSensorInfo`.
-- [ ] Define freshness behavior for missing or stale updates.
+- [x] Expose units, display names, and ranges through `getSensorInfo`.
+- [x] Define freshness behavior for missing or stale updates.
 - [ ] Validate the actual FLEX-6700 meter catalog and values on the LAN.
 
 Sources: [Flex metering protocol](https://github.com/flexradio/smartsdr-api-docs/wiki/Metering-Protocol), [Flex radio status and uptime](https://github.com/flexradio/smartsdr-api-docs/wiki/TCPIP-radio), [Soapy sensor API](https://github.com/pothosware/SoapySDR/blob/master/include/SoapySDR/Device.hpp).

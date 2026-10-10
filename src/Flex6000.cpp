@@ -247,31 +247,34 @@ public:
             const bool off = std::isinf(value) && value < 0;
             if (!txEnabled_ || name != "RF" || (!off && (!std::isfinite(value) || value < -20 || value > 0)))
                 throw std::runtime_error("TX RF gain must be -20 to 0 dB, or -inf for RF off");
-            command("radio uptime"); // Consume current transmit status before changing radio-wide drive.
-            if (!txRfPower_) throw std::runtime_error("Cannot read current TX RF power");
+            if (txRfPowerSnapshot_.load() < 0) throw std::runtime_error("Cannot read current TX RF power");
             const int power = off ? 0 : std::clamp(int(std::lround(100 * std::pow(10.0, value / 10.0))), 1, 100);
-            txRfPower_.reset();
+            if (txRfPowerSnapshot_.load() == power || lastRequestedTxRfPower_.load() == power) return;
             command("transmit set rfpower=" + std::to_string(power));
-            command("radio uptime");
-            if (!txRfPower_) throw std::runtime_error("TX RF power changed but readback is unavailable");
+            lastRequestedTxRfPower_.store(power);
+            // The command was accepted; a later transmit status can replace
+            // this value if the radio reports something different.
+            txRfPowerSnapshot_.store(power);
             return;
         }
         checkRx(direction);
         if (name != "RF" || rfGainMax_ <= rfGainMin_) throw std::runtime_error("Unsupported gain control");
         if (!std::isfinite(value) || value < rfGainMin_ || value > rfGainMax_) throw std::runtime_error("RF gain out of range");
         double snapped = rfGainStep_ > 0 ? rfGainMin_ + std::round((value - rfGainMin_) / rfGainStep_) * rfGainStep_ : value;
+        if (rfGainApplied_ && rfGain_ == snapped) return;
         std::ostringstream gain; gain << snapped;
         command("display pan set " + hexId(pan_) + " rfgain=" + gain.str());
         rfGain_ = snapped;
+        rfGainApplied_ = true;
     }
     double getGain(const int direction, const size_t) const override
     {
         if (direction != SOAPY_SDR_TX) return rfGain_;
         if (!txEnabled_) throw std::runtime_error("TX disabled");
-        const_cast<Flex *>(this)->command("radio uptime");
-        if (!txRfPower_) throw std::runtime_error("Cannot read TX RF power");
-        return *txRfPower_ == 0 ? -std::numeric_limits<double>::infinity() :
-            10.0 * std::log10(*txRfPower_ / 100.0);
+        const int power = txRfPowerSnapshot_.load();
+        if (power < 0) throw std::runtime_error("Cannot read TX RF power");
+        return power == 0 ? -std::numeric_limits<double>::infinity() :
+            std::round(10.0 * (10.0 * std::log10(power / 100.0))) / 10.0;
     }
     double getGain(const int direction, const size_t, const std::string &) const override { return getGain(direction, 0); }
     SoapySDR::Range getGainRange(const int direction, const size_t) const override
@@ -470,7 +473,11 @@ private:
             if (n <= 0) throw std::runtime_error("Flex command send failed");
             sent += size_t(n);
         }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
         for (;;) {
+            const auto remaining = deadline - std::chrono::steady_clock::now();
+            if (remaining <= std::chrono::steady_clock::duration::zero())
+                throw std::runtime_error("Flex command timeout: " + cmd);
             auto end = received_.find('\n');
             if (end != std::string::npos) {
                 std::string reply = received_.substr(0, end); received_.erase(0, end + 1);
@@ -492,7 +499,9 @@ private:
                             try {
                                 size_t count = 0;
                                 const int setting = std::stoi(reply.substr(power + 9), &count);
-                                if (count && setting >= 0 && setting <= 100) txRfPower_ = setting;
+                                if (count && setting >= 0 && setting <= 100) {
+                                    txRfPowerSnapshot_.store(setting);
+                                }
                             } catch (...) {}
                         }
                     }
@@ -506,7 +515,9 @@ private:
                 return second == std::string::npos ? "" : reply.substr(second + 1);
             }
             pollfd p{tcp_, POLLIN, 0};
-            if (poll(&p, 1, 3000) <= 0) throw std::runtime_error("Flex command timeout: " + cmd);
+            const auto waitMs = std::max(1, int(std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count()));
+            if (poll(&p, 1, waitMs) <= 0) throw std::runtime_error("Flex command timeout: " + cmd);
             char buffer[4096]; ssize_t n = recv(tcp_, buffer, sizeof buffer, 0);
             if (n <= 0) throw std::runtime_error("Flex TCP connection closed");
             received_.append(buffer, size_t(n));
@@ -515,7 +526,9 @@ private:
     int tcp_ = -1, udp_ = -1, channel_ = 1, rate_ = 48000, txRate_ = 24000;
     int rxTag_ = 0, txTag_ = 0, txSlice_ = -1;
     bool txEnabled_ = false, txActive_ = false;
-    std::optional<int> txDaxStatus_, previousDax_, txRfPower_;
+    std::optional<int> txDaxStatus_, previousDax_;
+    std::atomic<int> txRfPowerSnapshot_{-1};
+    std::atomic<int> lastRequestedTxRfPower_{-1};
     bool atuPresent_ = false;
     std::optional<bool> atuEnabled_;
     uint32_t txStream_ = 0, txCount_ = 0;
@@ -529,6 +542,7 @@ private:
     uint32_t serial_ = 0, pan_ = 0, stream_ = 0;
     double frequency_ = 14074000;
     double rfGain_ = 0, rfGainMin_ = 0, rfGainMax_ = 0, rfGainStep_ = 0;
+    bool rfGainApplied_ = false;
     std::atomic<bool> active_{false};
     std::atomic<unsigned> rxGeneration_{0};
     unsigned observedRxGeneration_ = 0;

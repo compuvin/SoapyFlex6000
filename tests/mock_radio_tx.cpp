@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -81,6 +82,14 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
             const std::string id = line.substr(1, separator - 1);
             const std::string cmd = line.substr(separator + 1);
             commands.push_back(cmd);
+            if (cmd == "display pan set 0x40000001 rfgain=30") {
+                const std::string status = "S12345678|radio pll_done=1\n";
+                for (int i = 0; i < 40; ++i) {
+                    send(client, status.data(), status.size(), MSG_NOSIGNAL);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+                continue; // Unrelated status traffic must not extend the command deadline.
+            }
             if (starts(cmd, "transmit set rfpower=")) rfPower = std::stoi(cmd.substr(21));
             if (cmd == "atu start") atuEnabled = true;
             if (cmd == "atu bypass") atuEnabled = false;
@@ -94,6 +103,7 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
             else if (starts(cmd, "slice create ")) result = "0";
             else if (cmd == "radio uptime") result = "123";
             else if (starts(cmd, "client ") || starts(cmd, "display pan s ") ||
+                     starts(cmd, "display pan set 0x40000001 rfgain=") ||
                      starts(cmd, "display pan remove ") || starts(cmd, "dax iq set ") ||
                      starts(cmd, "stream set ") || starts(cmd, "stream remove ") ||
                      starts(cmd, "slice set ") || starts(cmd, "slice t ") ||
@@ -111,7 +121,10 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
                 send(client, status.data(), status.size(), MSG_NOSIGNAL);
             }
             if (cmd == "sub tx all" || starts(cmd, "transmit set rfpower=")) {
-                const std::string status = "S12345678|transmit lo=300 hi=3000 dax=0 rfpower=" + std::to_string(rfPower) + "\n";
+                // Simulate a radio status that remains at the prior setting
+                // despite accepting one requested drive change.
+                const int reportedPower = rfPower == 32 ? 63 : rfPower;
+                const std::string status = "S12345678|transmit lo=300 hi=3000 dax=0 rfpower=" + std::to_string(reportedPower) + "\n";
                 send(client, status.data(), status.size(), MSG_NOSIGNAL);
             }
         }
@@ -143,14 +156,32 @@ int main()
                 require(radio->readSetting("atu") == "false", "ATU bypass readback wrong");
                 radio->writeSetting("atu", "true");
                 require(radio->readSetting("atu") == "true", "ATU start readback wrong");
+                const size_t commandsBeforeRxGain = commands.size();
+                radio->setGain(SOAPY_SDR_RX, 0, "RF", 10);
+                require(commands.size() == commandsBeforeRxGain + 1 &&
+                        commands.back() == "display pan set 0x40000001 rfgain=10",
+                        "first RX RF gain request must reach the radio");
+                radio->setGain(SOAPY_SDR_RX, 0, "RF", 10);
+                require(commands.size() == commandsBeforeRxGain + 1,
+                        "repeated RX RF gain request must not be resent");
                 require(radio->listGains(SOAPY_SDR_TX, 0) == std::vector<std::string>{"RF"},
                         "TX RF gain not advertised");
                 require(radio->getGainRange(SOAPY_SDR_TX, 0).minimum() == -20 &&
                         radio->getGainRange(SOAPY_SDR_TX, 0).maximum() == 0,
                         "TX gain range wrong");
-                require(std::abs(radio->getGain(SOAPY_SDR_TX, 0) + 3.0102999566) < 0.001,
+                const size_t commandsBeforeGainRead = commands.size();
+                require(radio->getGain(SOAPY_SDR_TX, 0) == -3.0,
                         "initial TX gain readback wrong");
+                require(commands.size() == commandsBeforeGainRead,
+                        "TX gain readback must not send a radio command");
+                const size_t commandsBeforeGainWrite = commands.size();
                 radio->setGain(SOAPY_SDR_TX, 0, -10);
+                require(commands.size() == commandsBeforeGainWrite + 1 &&
+                        commands.back() == "transmit set rfpower=10",
+                        "TX gain write must use one radio command");
+                radio->setGain(SOAPY_SDR_TX, 0, -10);
+                require(commands.size() == commandsBeforeGainWrite + 1,
+                        "repeated TX gain must not send another radio command");
                 require(std::abs(radio->getGain(SOAPY_SDR_TX, 0) + 10) < 0.001,
                         "TX gain round trip wrong");
                 radio->setGain(SOAPY_SDR_TX, 0, -std::numeric_limits<double>::infinity());
@@ -159,6 +190,14 @@ int main()
                 radio->setGain(SOAPY_SDR_TX, 0, 0);
                 require(radio->getGain(SOAPY_SDR_TX, 0) == 0,
                         "full TX RF gain readback wrong");
+                radio->setGain(SOAPY_SDR_TX, 0, -5);
+                radio->listSensors(); // Consume the simulated disagreeing TX status.
+                require(radio->getGain(SOAPY_SDR_TX, 0) == -2.0,
+                        "TX gain must report radio status when it differs from the request");
+                const size_t commandsBeforeRepeatedRequest = commands.size();
+                radio->setGain(SOAPY_SDR_TX, 0, -5);
+                require(commands.size() == commandsBeforeRepeatedRequest,
+                        "repeated accepted TX gain request must not be resent");
                 const auto sensors = radio->listSensors();
                 require(std::find(sensors.begin(), sensors.end(), "flex_meter_17_TX-_3") != sensors.end(),
                         "SWR meter missing");
@@ -236,6 +275,15 @@ int main()
                 }
                 require(radio->deactivateStream(stream) == 0, "TX unkey failed");
                 radio->closeStream(stream);
+                const auto timeoutStart = std::chrono::steady_clock::now();
+                bool timedOut = false;
+                try { radio->setGain(SOAPY_SDR_RX, 0, "RF", 30); }
+                catch (const std::exception &e) {
+                    timedOut = std::string(e.what()).find("Flex command timeout") != std::string::npos;
+                }
+                require(timedOut && std::chrono::steady_clock::now() - timeoutStart <
+                        std::chrono::milliseconds(3500),
+                        "status traffic must not extend a missing command reply");
             } catch (...) { SoapySDR::Device::unmake(radio); throw; }
             SoapySDR::Device::unmake(radio);
         } catch (...) {
