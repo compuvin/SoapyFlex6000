@@ -259,8 +259,22 @@ int main()
                 radio->setBandwidth(SOAPY_SDR_TX, 0, 0);
                 require(radio->getSampleRate(SOAPY_SDR_TX, 0) == 192000, "TX rate report wrong");
                 require(radio->getBandwidth(SOAPY_SDR_TX, 0) == 2400, "TX bandwidth report wrong");
+                const size_t beforeSetup = commands.size();
                 auto *stream = radio->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CF32);
+                const size_t afterSetup = commands.size();
+                require(afterSetup > beforeSetup &&
+                        indexOf(commands, "stream create type=dax_tx") < afterSetup &&
+                        indexOf(commands, "stream set 0x20000002 tx=1") < afterSetup,
+                        "TX resources must be prepared during stream setup");
+                require(std::none_of(commands.begin(), commands.begin() + afterSetup,
+                        [](const std::string &cmd) { return cmd == "xmit 1" || cmd == "transmit set dax=1"; }),
+                        "TX setup must not select DAX or key the radio");
                 require(radio->activateStream(stream) == 0, "TX activation failed");
+                require(std::none_of(commands.begin() + afterSetup, commands.end(),
+                        [](const std::string &cmd) { return cmd == "stream create type=dax_tx" ||
+                            cmd == "client set send_reduced_bw_dax=true" ||
+                            cmd == "stream set 0x20000002 tx=1"; }),
+                        "TX activation must reuse prepared resources");
                 std::array<float, 256> iq{};
                 const void *buffers[] = {iq.data()};
                 for (int packet = 0; packet < 375; ++packet) {

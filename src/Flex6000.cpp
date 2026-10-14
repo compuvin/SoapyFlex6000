@@ -282,7 +282,7 @@ public:
     SoapySDR::Range getGainRange(const int direction, const size_t, const std::string &) const override
     { return getGainRange(direction, 0); }
     SoapySDR::Stream *setupStream(const int direction, const std::string &format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &) override
-    { if (direction == SOAPY_SDR_TX && !txEnabled_) throw std::runtime_error("TX disabled by tx_path=none"); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only channel 0 CF32 is supported"); return direction == SOAPY_SDR_TX ? txHandle() : rxHandle(); }
+    { if (direction == SOAPY_SDR_TX && !txEnabled_) throw std::runtime_error("TX disabled by tx_path=none"); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only channel 0 CF32 is supported"); if (direction == SOAPY_SDR_TX) { prepareTx(); return txHandle(); } return rxHandle(); }
     void closeStream(SoapySDR::Stream *stream) override { if (stream == txHandle()) stopTx(); else active_.store(false); }
     size_t getStreamMTU(SoapySDR::Stream *) const override { return 512; }
     int activateStream(SoapySDR::Stream *stream, const int flags, const long long, const size_t) override
@@ -419,6 +419,15 @@ private:
         command("slice set " + std::to_string(txSlice_) + " txant=" + txAntenna_);
         tuneTx();
     }
+    void prepareTx()
+    {
+        if (txPrepared_) return;
+        ensureTxSlice();
+        command("client set send_reduced_bw_dax=true");
+        if (!txStream_) txStream_ = parseId(firstField(command("stream create type=dax_tx")));
+        command("stream set " + hexId(txStream_) + " tx=1");
+        txPrepared_ = true;
+    }
     void startTx()
     {
         if (!txEnabled_ || txActive_) return;
@@ -429,10 +438,7 @@ private:
             command("radio uptime");
             if (!txDaxStatus_) throw std::runtime_error("Cannot determine current transmit DAX source");
             previousDax_ = *txDaxStatus_;
-            ensureTxSlice();
-            command("client set send_reduced_bw_dax=true");
-            if (!txStream_) txStream_ = parseId(firstField(command("stream create type=dax_tx")));
-            command("stream set " + hexId(txStream_) + " tx=1");
+            prepareTx();
             command("slice set " + std::to_string(txSlice_) + " tx=1");
             command("transmit set dax=1");
             command("xmit 1"); txActive_ = true;
@@ -525,7 +531,7 @@ private:
     }
     int tcp_ = -1, udp_ = -1, channel_ = 1, rate_ = 48000, txRate_ = 24000;
     int rxTag_ = 0, txTag_ = 0, txSlice_ = -1;
-    bool txEnabled_ = false, txActive_ = false;
+    bool txEnabled_ = false, txActive_ = false, txPrepared_ = false;
     std::optional<int> txDaxStatus_, previousDax_;
     std::atomic<int> txRfPowerSnapshot_{-1};
     std::atomic<int> lastRequestedTxRfPower_{-1};
