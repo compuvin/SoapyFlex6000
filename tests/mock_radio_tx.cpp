@@ -64,6 +64,9 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
     send(client, banner.data(), banner.size(), MSG_NOSIGNAL);
     std::string pending;
     int rfPower = 50;
+    int daxSource = 0;
+    bool txSliceSelected = false;
+    int unkeys = 0;
     bool atuEnabled = true;
     for (;;) {
         char buffer[2048];
@@ -91,6 +94,12 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
                 continue; // Unrelated status traffic must not extend the command deadline.
             }
             if (starts(cmd, "transmit set rfpower=")) rfPower = std::stoi(cmd.substr(21));
+            if (starts(cmd, "transmit set dax=")) daxSource = std::stoi(cmd.substr(17));
+            if (cmd == "slice set 0 tx=1") txSliceSelected = true;
+            if (cmd == "xmit 0" && ++unkeys == 2) {
+                daxSource = 0;
+                txSliceSelected = false;
+            }
             if (cmd == "atu start") atuEnabled = true;
             if (cmd == "atu bypass") atuEnabled = false;
             std::string result;
@@ -109,7 +118,7 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
                      starts(cmd, "slice set ") || starts(cmd, "slice t ") ||
                      starts(cmd, "slice remove ") || starts(cmd, "transmit set dax=") ||
                      starts(cmd, "transmit set rfpower=") ||
-                     cmd == "sub meter all" || cmd == "unsub meter all" ||
+                     cmd == "sub meter all" || cmd == "unsub meter all" || cmd == "sub slice all" ||
                      starts(cmd, "xmit ") || cmd == "sub tx all" ||
                      cmd == "sub atu all" || cmd == "atu start" || cmd == "atu bypass") {}
             else { error = "unexpected radio command: " + cmd; break; }
@@ -120,12 +129,23 @@ void serve(int listening, std::vector<std::string> &commands, std::string &error
                     std::to_string(int(atuEnabled)) + " memories_enabled=1\n";
                 send(client, status.data(), status.size(), MSG_NOSIGNAL);
             }
-            if (cmd == "sub tx all" || starts(cmd, "transmit set rfpower=")) {
+            if (cmd == "sub tx all" || starts(cmd, "transmit set rfpower=") ||
+                starts(cmd, "transmit set dax=")) {
                 // Simulate a radio status that remains at the prior setting
                 // despite accepting one requested drive change.
                 const int reportedPower = rfPower == 32 ? 63 : rfPower;
-                const std::string status = "S12345678|transmit lo=300 hi=3000 dax=0 rfpower=" + std::to_string(reportedPower) + "\n";
+                const std::string status = "S12345678|transmit lo=300 hi=3000 dax=" +
+                    std::to_string(daxSource) + " rfpower=" + std::to_string(reportedPower) + "\n";
                 send(client, status.data(), status.size(), MSG_NOSIGNAL);
+            }
+            if (cmd == "sub slice all" || cmd == "slice set 0 tx=1") {
+                const std::string status = "S12345678|slice 0 tx=" +
+                    std::to_string(int(txSliceSelected)) + "\n";
+                send(client, status.data(), status.size(), MSG_NOSIGNAL);
+            }
+            if (cmd == "xmit 0" && unkeys == 2) {
+                const std::string changed = "S0|slice 0 tx=0\nS0|transmit dax=0\n";
+                send(client, changed.data(), changed.size(), MSG_NOSIGNAL);
             }
         }
         if (!error.empty()) break;
@@ -264,17 +284,20 @@ int main()
                 const size_t afterSetup = commands.size();
                 require(afterSetup > beforeSetup &&
                         indexOf(commands, "stream create type=dax_tx") < afterSetup &&
-                        indexOf(commands, "stream set 0x20000002 tx=1") < afterSetup,
-                        "TX resources must be prepared during stream setup");
+                        indexOf(commands, "stream set 0x20000002 tx=1") < afterSetup &&
+                        indexOf(commands, "slice set 0 tx=1") < afterSetup &&
+                        indexOf(commands, "transmit set dax=1") < afterSetup,
+                        "TX path must be selected during stream setup");
                 require(std::none_of(commands.begin(), commands.begin() + afterSetup,
-                        [](const std::string &cmd) { return cmd == "xmit 1" || cmd == "transmit set dax=1"; }),
-                        "TX setup must not select DAX or key the radio");
+                        [](const std::string &cmd) { return cmd == "xmit 1"; }),
+                        "TX setup must not key the radio");
                 require(radio->activateStream(stream) == 0, "TX activation failed");
                 require(std::none_of(commands.begin() + afterSetup, commands.end(),
-                        [](const std::string &cmd) { return cmd == "stream create type=dax_tx" ||
+                        [](const std::string &cmd) { return cmd == "slice set 0 tx=1" ||
+                            cmd == "transmit set dax=1" || cmd == "stream create type=dax_tx" ||
                             cmd == "client set send_reduced_bw_dax=true" ||
                             cmd == "stream set 0x20000002 tx=1"; }),
-                        "TX activation must reuse prepared resources");
+                        "TX activation must reuse selected path");
                 std::array<float, 256> iq{};
                 const void *buffers[] = {iq.data()};
                 for (int packet = 0; packet < 375; ++packet) {
@@ -288,6 +311,20 @@ int main()
                             "TX write failed");
                 }
                 require(radio->deactivateStream(stream) == 0, "TX unkey failed");
+                const size_t afterFirstTx = commands.size();
+                require(radio->activateStream(stream) == 0, "second TX activation failed");
+                require(std::none_of(commands.begin() + afterFirstTx, commands.end(),
+                        [](const std::string &cmd) { return cmd == "slice set 0 tx=1" ||
+                            cmd == "transmit set dax=1" || cmd == "sub tx all"; }),
+                        "second TX must reuse selected path and subscription");
+                require(radio->deactivateStream(stream) == 0, "second TX unkey failed");
+                const size_t afterChangedState = commands.size();
+                require(radio->activateStream(stream) == 0, "TX activation after external state change failed");
+                require(indexOf(commands, "slice set 0 tx=1") < afterSetup &&
+                        std::find(commands.begin() + afterChangedState, commands.end(), "slice set 0 tx=1") != commands.end() &&
+                        std::find(commands.begin() + afterChangedState, commands.end(), "transmit set dax=1") != commands.end(),
+                        "TX activation must reselect a path changed by another client");
+                require(radio->deactivateStream(stream) == 0, "third TX unkey failed");
                 radio->closeStream(stream);
                 const auto timeoutStart = std::chrono::steady_clock::now();
                 bool timedOut = false;

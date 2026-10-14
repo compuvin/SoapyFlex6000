@@ -128,6 +128,7 @@ public:
     {
         if (tcp_ >= 0) {
             try { stopTx(); } catch (...) {}
+            try { releaseTxPath(); } catch (...) {}
             try { if (meterSubscribed_) command("unsub meter all"); } catch (...) {}
             try { if (txStream_) command("stream remove " + hexId(txStream_)); } catch (...) {}
             try { if (txSlice_ >= 0) command("slice remove " + std::to_string(txSlice_)); } catch (...) {}
@@ -283,8 +284,8 @@ public:
     SoapySDR::Range getGainRange(const int direction, const size_t, const std::string &) const override
     { return getGainRange(direction, 0); }
     SoapySDR::Stream *setupStream(const int direction, const std::string &format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &) override
-    { if (direction == SOAPY_SDR_TX && !txEnabled_) throw std::runtime_error("TX disabled by tx_path=none"); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only channel 0 CF32 is supported"); if (direction == SOAPY_SDR_TX) { prepareTx(); return txHandle(); } return rxHandle(); }
-    void closeStream(SoapySDR::Stream *stream) override { if (stream == txHandle()) stopTx(); else active_.store(false); }
+    { if (direction == SOAPY_SDR_TX && !txEnabled_) throw std::runtime_error("TX disabled by tx_path=none"); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only channel 0 CF32 is supported"); if (direction == SOAPY_SDR_TX) { selectTxPath(); return txHandle(); } return rxHandle(); }
+    void closeStream(SoapySDR::Stream *stream) override { if (stream == txHandle()) { if (stopTx()) releaseTxPath(); } else active_.store(false); }
     size_t getStreamMTU(SoapySDR::Stream *) const override { return 512; }
     int activateStream(SoapySDR::Stream *stream, const int flags, const long long, const size_t) override
     { if (flags) return SOAPY_SDR_NOT_SUPPORTED; if (stream == txHandle()) { startTx(); return 0; } { std::lock_guard<std::mutex> lock(udpMutex_); iqPackets_.clear(); } ++rxGeneration_; active_.store(true); return 0; }
@@ -429,11 +430,45 @@ private:
         command("stream set " + hexId(txStream_) + " tx=1");
         txPrepared_ = true;
     }
+    void selectTxPath()
+    {
+        if (txPathSelected_) return;
+        prepareTx();
+        txDaxStatus_.reset();
+        command("sub tx all");
+        command("sub slice all");
+        command("radio uptime");
+        if (!txDaxStatus_) throw std::runtime_error("Cannot determine current transmit DAX source");
+        previousDax_ = *txDaxStatus_;
+        try {
+            command("slice set " + std::to_string(txSlice_) + " tx=1");
+            txSliceSelected_ = true;
+            command("transmit set dax=1");
+            txDaxStatus_ = 1;
+            txPathSelected_ = true;
+        } catch (...) {
+            try { if (previousDax_ && *previousDax_ != 1)
+                command("transmit set dax=" + std::to_string(*previousDax_)); } catch (...) {}
+            previousDax_.reset();
+            throw;
+        }
+    }
+    void releaseTxPath()
+    {
+        if (!txPathSelected_) return;
+        txPathSelected_ = false;
+        if (previousDax_ && *previousDax_ != 1) {
+            command("radio uptime");
+            if (txDaxStatus_ && *txDaxStatus_ == 1)
+                command("transmit set dax=" + std::to_string(*previousDax_));
+        }
+        previousDax_.reset();
+    }
     void startTx()
     {
         if (!txEnabled_ || txActive_) return;
         const auto started = std::chrono::steady_clock::now();
-        std::array<double, 6> stepMs{};
+        std::array<double, 5> stepMs{};
         const char *stage = "starting";
         const auto elapsedMs = [](std::chrono::steady_clock::time_point since) {
             return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - since).count();
@@ -445,25 +480,26 @@ private:
             stepMs[index] = elapsedMs(began);
         };
         try {
-            txDaxStatus_.reset();
-            previousDax_.reset();
-            measure(0, "sub_tx", [&] { command("sub tx all"); });
-            measure(1, "uptime", [&] { command("radio uptime"); });
+            measure(0, "prepare", [&] { selectTxPath(); });
+            measure(1, "status", [&] { command("radio uptime"); });
             if (!txDaxStatus_) throw std::runtime_error("Cannot determine current transmit DAX source");
-            previousDax_ = *txDaxStatus_;
-            measure(2, "prepare", [&] { prepareTx(); });
-            measure(3, "select_slice", [&] { command("slice set " + std::to_string(txSlice_) + " tx=1"); });
-            measure(4, "select_dax", [&] { command("transmit set dax=1"); });
-            measure(5, "key", [&] { command("xmit 1"); });
+            if (!txSliceSelected_) measure(2, "select_slice", [&] {
+                command("slice set " + std::to_string(txSlice_) + " tx=1");
+                txSliceSelected_ = true;
+            });
+            if (*txDaxStatus_ != 1) measure(3, "select_dax", [&] {
+                command("transmit set dax=1");
+                txDaxStatus_ = 1;
+            });
+            measure(4, "key", [&] { command("xmit 1"); });
             txActive_ = true;
             converter_.setInputRate(txRate_); txFill_ = 0; txCount_ = 0;
             nextPacket_ = std::chrono::steady_clock::now();
-            std::fprintf(stderr, "[flex6000 tx timing] activate total=%.1f ms sub_tx=%.1f uptime=%.1f prepare=%.1f select_slice=%.1f select_dax=%.1f key=%.1f\n",
-                elapsedMs(started), stepMs[0], stepMs[1], stepMs[2], stepMs[3], stepMs[4], stepMs[5]);
+            std::fprintf(stderr, "[flex6000 tx timing] activate total=%.1f ms prepare=%.1f status=%.1f select_slice=%.1f select_dax=%.1f key=%.1f\n",
+                elapsedMs(started), stepMs[0], stepMs[1], stepMs[2], stepMs[3], stepMs[4]);
         } catch (...) {
             std::fprintf(stderr, "[flex6000 tx timing] activate failed at %s after %.1f ms\n", stage, elapsedMs(started));
             try { command("xmit 0"); } catch (...) {}
-            try { if (previousDax_) command("transmit set dax=" + std::to_string(*previousDax_)); } catch (...) {}
             throw;
         }
     }
@@ -472,7 +508,6 @@ private:
         if (!txActive_) return true;
         try { command("xmit 0"); } catch (...) { return false; }
         txActive_ = false;
-        try { if (previousDax_) command("transmit set dax=" + std::to_string(*previousDax_)); } catch (...) {}
         txFill_ = 0;
         return true;
     }
@@ -509,6 +544,17 @@ private:
             if (end != std::string::npos) {
                 std::string reply = received_.substr(0, end); received_.erase(0, end + 1);
                 if (!reply.empty() && reply[0] == 'S') {
+                    auto slice = reply.find("|slice ");
+                    if (slice != std::string::npos && txSlice_ >= 0) {
+                        std::istringstream fields(reply.substr(slice + 7));
+                        int sliceId = -1;
+                        if (fields >> sliceId && sliceId == txSlice_) {
+                            std::string field;
+                            while (fields >> field)
+                                if (field == "tx=0" || field == "tx=1")
+                                    txSliceSelected_ = field == "tx=1";
+                        }
+                    }
                     auto atu = reply.find("|atu ");
                     if (atu != std::string::npos) {
                         auto enabled = reply.find("atu_enabled=", atu);
@@ -553,6 +599,7 @@ private:
     int tcp_ = -1, udp_ = -1, channel_ = 1, rate_ = 48000, txRate_ = 24000;
     int rxTag_ = 0, txTag_ = 0, txSlice_ = -1;
     bool txEnabled_ = false, txActive_ = false, txPrepared_ = false;
+    bool txPathSelected_ = false, txSliceSelected_ = false;
     std::optional<int> txDaxStatus_, previousDax_;
     std::atomic<int> txRfPowerSnapshot_{-1};
     std::atomic<int> lastRequestedTxRfPower_{-1};
