@@ -14,6 +14,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <thread>
@@ -431,20 +432,40 @@ private:
     void startTx()
     {
         if (!txEnabled_ || txActive_) return;
+        const auto started = std::chrono::steady_clock::now();
+        std::array<double, 6> stepMs{};
+        const char *stage = "starting";
+        const auto elapsedMs = [](std::chrono::steady_clock::time_point since) {
+            return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - since).count();
+        };
+        const auto measure = [&](size_t index, const char *name, auto &&action) {
+            stage = name;
+            const auto began = std::chrono::steady_clock::now();
+            try { action(); } catch (...) { stepMs[index] = elapsedMs(began); throw; }
+            stepMs[index] = elapsedMs(began);
+        };
         try {
             txDaxStatus_.reset();
             previousDax_.reset();
-            command("sub tx all");
-            command("radio uptime");
+            measure(0, "sub_tx", [&] { command("sub tx all"); });
+            measure(1, "uptime", [&] { command("radio uptime"); });
             if (!txDaxStatus_) throw std::runtime_error("Cannot determine current transmit DAX source");
             previousDax_ = *txDaxStatus_;
-            prepareTx();
-            command("slice set " + std::to_string(txSlice_) + " tx=1");
-            command("transmit set dax=1");
-            command("xmit 1"); txActive_ = true;
+            measure(2, "prepare", [&] { prepareTx(); });
+            measure(3, "select_slice", [&] { command("slice set " + std::to_string(txSlice_) + " tx=1"); });
+            measure(4, "select_dax", [&] { command("transmit set dax=1"); });
+            measure(5, "key", [&] { command("xmit 1"); });
+            txActive_ = true;
             converter_.setInputRate(txRate_); txFill_ = 0; txCount_ = 0;
             nextPacket_ = std::chrono::steady_clock::now();
-        } catch (...) { try { command("xmit 0"); } catch (...) {} try { if (previousDax_) command("transmit set dax=" + std::to_string(*previousDax_)); } catch (...) {} throw; }
+            std::fprintf(stderr, "[flex6000 tx timing] activate total=%.1f ms sub_tx=%.1f uptime=%.1f prepare=%.1f select_slice=%.1f select_dax=%.1f key=%.1f\n",
+                elapsedMs(started), stepMs[0], stepMs[1], stepMs[2], stepMs[3], stepMs[4], stepMs[5]);
+        } catch (...) {
+            std::fprintf(stderr, "[flex6000 tx timing] activate failed at %s after %.1f ms\n", stage, elapsedMs(started));
+            try { command("xmit 0"); } catch (...) {}
+            try { if (previousDax_) command("transmit set dax=" + std::to_string(*previousDax_)); } catch (...) {}
+            throw;
+        }
     }
     bool stopTx()
     {
