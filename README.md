@@ -1,7 +1,5 @@
 # SoapyFlex6000
 
-[![CodeFactor](https://www.codefactor.io/repository/github/compuvin/soapyflex6000/badge)](https://www.codefactor.io/repository/github/compuvin/soapyflex6000)
-
 A lightweight C++17 [SoapySDR](https://github.com/pothosware/SoapySDR) driver for FLEX-6000 series radios. It bridges the radio's DAX IQ receive stream into a SoapySDR application. Signal processing stays in the application.
 
 The `main` branch provides RX and narrowband TX through DAX audio. Both channels are available by default; see [Transmit status](#transmit-status) for the TX limits.
@@ -83,3 +81,6 @@ The experimental IQ waveform setup disrupted the radio's control service without
 - [nCAT](https://github.com/kc2g-flex-tools/nCAT): Flex tuning and client control patterns.
 - [M0LTE.Flex DAX IQ](https://github.com/M0LTE/M0LTE.Flex): DAX IQ setup sequence and payload order.
 - [AetherSDR](https://github.com/aethersdr/AetherSDR): additional FLEX-6000 control and streaming reference.
+
+
+[![CodeFactor](https://www.codefactor.io/repository/github/compuvin/soapyflex6000/badge)](https://www.codefactor.io/repository/github/compuvin/soapyflex6000)
