@@ -14,8 +14,11 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <thread>
 #include <iomanip>
 #include <limits>
@@ -28,6 +31,29 @@
 #include <vector>
 
 namespace {
+void txLog(const char *event, const std::string &detail = "") noexcept
+{
+    try {
+        static std::mutex logMutex;
+        std::lock_guard<std::mutex> lock(logMutex);
+        const char *home = std::getenv("HOME");
+        if (!home) return;
+        const std::string path = std::string(home) +
+            "/Library/Logs/SoapyFlex6000-tx.log";
+        FILE *file = std::fopen(path.c_str(), "a");
+        if (!file) return;
+        const auto now = std::chrono::system_clock::now();
+        const auto seconds = std::chrono::system_clock::to_time_t(now);
+        std::tm utc{};
+        gmtime_r(&seconds, &utc);
+        char timestamp[32];
+        std::strftime(timestamp, sizeof timestamp, "%Y-%m-%dT%H:%M:%SZ", &utc);
+        std::fprintf(file, "%s pid=%ld %s %s\n",
+            timestamp, long(getpid()), event, detail.c_str());
+        std::fclose(file);
+    } catch (...) {}
+}
+
 uint16_t be16(const uint8_t *p) { return (uint16_t(p[0]) << 8) | p[1]; }
 uint32_t be32(const uint8_t *p) { return (uint32_t(be16(p)) << 16) | be16(p + 2); }
 std::string arg(const SoapySDR::Kwargs &a, const std::string &k, const std::string &fallback)
@@ -125,6 +151,7 @@ public:
     }
     ~Flex() override
     {
+        if (txActive_) txLog("device_close", "TX still marked active");
         if (tcp_ >= 0) {
             try { stopTx(); } catch (...) {}
             try { releaseTxPath(); } catch (...) {}
@@ -283,12 +310,43 @@ public:
     SoapySDR::Range getGainRange(const int direction, const size_t, const std::string &) const override
     { return getGainRange(direction, 0); }
     SoapySDR::Stream *setupStream(const int direction, const std::string &format, const std::vector<size_t> &channels, const SoapySDR::Kwargs &) override
-    { if (direction == SOAPY_SDR_TX && !txEnabled_) throw std::runtime_error("TX disabled by tx_path=none"); if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0})) throw std::runtime_error("Only channel 0 CF32 is supported"); if (direction == SOAPY_SDR_TX) { selectTxPath(); return txHandle(); } return rxHandle(); }
-    void closeStream(SoapySDR::Stream *stream) override { if (stream == txHandle()) { if (stopTx()) releaseTxPath(); } else active_.store(false); }
+    {
+        if (direction == SOAPY_SDR_TX && !txEnabled_) throw std::runtime_error("TX disabled by tx_path=none");
+        if (format != SOAPY_SDR_CF32 || (!channels.empty() && channels != std::vector<size_t>{0}))
+            throw std::runtime_error("Only channel 0 CF32 is supported");
+        if (direction != SOAPY_SDR_TX) return rxHandle();
+        txLog("setup_TX", "begin");
+        try {
+            selectTxPath();
+            txLog("setup_TX", "complete; radio not keyed");
+            return txHandle();
+        } catch (const std::exception &e) {
+            txLog("setup_TX", std::string("failed: ") + e.what());
+            throw;
+        }
+    }
+    void closeStream(SoapySDR::Stream *stream) override
+    {
+        if (stream != txHandle()) { active_.store(false); return; }
+        txLog("close_TX", "requested");
+        if (stopTx()) {
+            releaseTxPath();
+            txLog("close_TX", "complete");
+        } else txLog("close_TX", "unkey failed; TX path retained");
+    }
     size_t getStreamMTU(SoapySDR::Stream *) const override { return 512; }
     int activateStream(SoapySDR::Stream *stream, const int flags, const long long, const size_t) override
-    { if (flags) return SOAPY_SDR_NOT_SUPPORTED; if (stream == txHandle()) { startTx(); return 0; } { std::lock_guard<std::mutex> lock(udpMutex_); iqPackets_.clear(); } ++rxGeneration_; active_.store(true); return 0; }
-    int deactivateStream(SoapySDR::Stream *stream, const int, const long long) override { if (stream == txHandle()) return stopTx() ? 0 : SOAPY_SDR_STREAM_ERROR; active_.store(false); { std::lock_guard<std::mutex> lock(udpMutex_); iqPackets_.clear(); } return 0; }
+    { if (flags) return SOAPY_SDR_NOT_SUPPORTED; if (stream == txHandle()) { txLog("activate_TX", "requested"); startTx(); return 0; } { std::lock_guard<std::mutex> lock(udpMutex_); iqPackets_.clear(); } ++rxGeneration_; active_.store(true); return 0; }
+    int deactivateStream(SoapySDR::Stream *stream, const int, const long long) override
+    {
+        if (stream == txHandle()) {
+            txLog("deactivate_TX", "requested");
+            return stopTx() ? 0 : SOAPY_SDR_STREAM_ERROR;
+        }
+        active_.store(false);
+        { std::lock_guard<std::mutex> lock(udpMutex_); iqPackets_.clear(); }
+        return 0;
+    }
     int writeStream(SoapySDR::Stream *stream, const void * const *buffs, const size_t numElems, int &flags, const long long, const long timeoutUs) override
     {
         if (stream != txHandle() || !txActive_ || !buffs || !buffs[0] || flags) return SOAPY_SDR_STREAM_ERROR;
@@ -311,7 +369,15 @@ public:
                 nextPacket_ += std::chrono::microseconds(5333);
                 if (nextPacket_ < std::chrono::steady_clock::now()) nextPacket_ = std::chrono::steady_clock::now();
             }
-        } catch (...) { stopTx(); return SOAPY_SDR_STREAM_ERROR; }
+        } catch (const std::exception &e) {
+            txLog("write_TX", std::string("failed: ") + e.what());
+            stopTx();
+            return SOAPY_SDR_STREAM_ERROR;
+        } catch (...) {
+            txLog("write_TX", "failed: unknown exception");
+            stopTx();
+            return SOAPY_SDR_STREAM_ERROR;
+        }
         flags = 0;
         return int(consumed);
     }
@@ -465,7 +531,10 @@ private:
     }
     void startTx()
     {
-        if (!txEnabled_ || txActive_) return;
+        if (!txEnabled_ || txActive_) {
+            txLog("activate_TX", txActive_ ? "already active" : "TX disabled");
+            return;
+        }
         try {
             selectTxPath();
             command("radio uptime");
@@ -478,19 +547,38 @@ private:
                 command("transmit set dax=1");
                 txDaxStatus_ = 1;
             }
+            txLog("xmit_1", "sending");
             command("xmit 1");
+            txLog("xmit_1", "radio replied success");
             txActive_ = true;
             converter_.setInputRate(txRate_); txFill_ = 0; txCount_ = 0;
             nextPacket_ = std::chrono::steady_clock::now();
-        } catch (...) {
-            try { command("xmit 0"); } catch (...) {}
+        } catch (const std::exception &e) {
+            txLog("activate_TX", std::string("failed: ") + e.what());
+            try {
+                txLog("xmit_0", "cleanup sending");
+                command("xmit 0");
+                txLog("xmit_0", "cleanup radio replied success");
+            } catch (const std::exception &cleanup) {
+                txLog("xmit_0", std::string("cleanup failed: ") + cleanup.what());
+            }
             throw;
         }
     }
     bool stopTx()
     {
-        if (!txActive_) return true;
-        try { command("xmit 0"); } catch (...) { return false; }
+        if (!txActive_) {
+            txLog("xmit_0", "skipped; driver not marked active");
+            return true;
+        }
+        txLog("xmit_0", "sending");
+        try {
+            command("xmit 0");
+        } catch (const std::exception &e) {
+            txLog("xmit_0", std::string("failed: ") + e.what());
+            return false;
+        }
+        txLog("xmit_0", "radio replied success");
         txActive_ = false;
         txFill_ = 0;
         return true;
